@@ -10,13 +10,15 @@ import (
 )
 
 type LaunchSpec struct {
-	Java          JavaCandidate
-	Jar           JarInfo
-	WorkingDir    string
-	DataDirectory string
-	NeedsGraphics bool
-	Args          []string
-	Command       *exec.Cmd
+	InstanceID         string
+	Java               JavaCandidate
+	Jar                JarInfo
+	WorkingDir         string
+	DataDirectory      string
+	NeedsGraphics      bool
+	InteractiveConsole bool
+	Args               []string
+	Command            *exec.Cmd
 }
 
 func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
@@ -92,14 +94,17 @@ func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
 		return LaunchSpec{}, fmt.Errorf("工作目录不可用: %s", workingDir)
 	}
 	needsGraphics := adapter.NeedsGraphics(jar.MainClass)
+	interactiveConsole := adapter.InteractiveConsole(jar.MainClass)
 	cmd := javaCommand(javaPath, args, workingDir, needsGraphics)
 	cmd.Dir = workingDir
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return LaunchSpec{
-		Java: java,
-		Jar:  jar, WorkingDir: workingDir, DataDirectory: dataDirectory, NeedsGraphics: needsGraphics,
+		InstanceID: cfg.InstanceID,
+		Java:       java,
+		Jar:        jar, WorkingDir: workingDir, DataDirectory: dataDirectory,
+		NeedsGraphics: needsGraphics, InteractiveConsole: interactiveConsole,
 		Args: args, Command: cmd,
 	}, nil
 }

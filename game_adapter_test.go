@@ -19,6 +19,12 @@ func TestAutoProfileRecognizesMindustry(t *testing.T) {
 	if adapter.NeedsGraphics("mindustry.server.ServerLauncher") {
 		t.Fatal("server launcher should not require graphics")
 	}
+	if !adapter.InteractiveConsole("mindustry.server.ServerLauncher") {
+		t.Fatal("server launcher should expose an interactive console")
+	}
+	if adapter.InteractiveConsole("mindustry.desktop.DesktopLauncher") {
+		t.Fatal("desktop launcher should not expose an interactive console")
+	}
 	jvm, game, err := adapter.LaunchArguments(AdapterLaunchContext{DataDirectory: "/games/data"})
 	if err != nil {
 		t.Fatal(err)

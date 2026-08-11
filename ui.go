@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type editMode int
@@ -24,54 +26,82 @@ const (
 	editDataDir
 	editJVMArgs
 	editGameArgs
+	editInstanceName
 )
 
-const menuItemCount = 13
+const menuItemCount = 15
 
-type environmentMsg struct{ env Environment }
+type environmentMsg struct {
+	instanceID string
+	generation uint64
+	env        Environment
+}
 
 type model struct {
-	cfg               Config
-	cfgPath           string
-	env               Environment
-	cursor            int
-	width             int
-	height            int
-	loading           bool
-	dirty             bool
-	status            string
-	statusErr         bool
-	mode              editMode
-	input             textinput.Model
-	area              textarea.Model
-	logView           viewport.Model
-	memory            MemoryInfo
-	showLog           bool
-	launching         bool
-	logText           string
-	logPath           string
-	launchErr         error
-	diagnostics       []Diagnostic
-	showAnalysis      bool
-	activeSession     *launchSession
-	showTools         bool
-	toolsCursor       int
-	toolBusy          bool
-	toolStatus        string
-	toolStatusErr     bool
-	backupCount       int
-	lastBackup        BackupResult
-	showMods          bool
-	mods              []MindustryMod
-	modsCursor        int
-	modsStatus        string
-	modsStatusErr     bool
-	confirmDisableAll bool
-	modDisablePlan    MindustryModDisablePlan
-	picking           bool
-	pickerTarget      editMode
-	pickerLabel       string
-	picker            filepicker.Model
+	launcher              LauncherConfig
+	cfg                   Config
+	cfgPath               string
+	env                   Environment
+	discoveryGeneration   uint64
+	cursor                int
+	width                 int
+	height                int
+	loading               bool
+	dirty                 bool
+	confirmQuit           bool
+	status                string
+	statusErr             bool
+	mode                  editMode
+	input                 textinput.Model
+	serverInput           textinput.Model
+	area                  textarea.Model
+	logView               viewport.Model
+	memory                MemoryInfo
+	showLog               bool
+	launching             bool
+	logText               string
+	logPath               string
+	launchErr             error
+	launchCleanupErr      error
+	diagnostics           []Diagnostic
+	showAnalysis          bool
+	activeSession         *launchSession
+	consoleInput          bool
+	serverStopPending     bool
+	safeModeActive        bool
+	showTools             bool
+	toolsCursor           int
+	toolBusy              bool
+	toolStatus            string
+	toolStatusErr         bool
+	backupCount           int
+	lastBackup            BackupResult
+	showBackups           bool
+	backups               []BackupInfo
+	backupsCursor         int
+	backupPreview         BackupPreview
+	backupBusy            bool
+	backupStatus          string
+	backupStatusErr       bool
+	confirmRestoreBackup  bool
+	showPreflight         bool
+	preflightBusy         bool
+	preflight             PreflightReport
+	showMods              bool
+	mods                  []MindustryMod
+	modsCursor            int
+	modsStatus            string
+	modsStatusErr         bool
+	confirmDisableAll     bool
+	modDisablePlan        MindustryModDisablePlan
+	picking               bool
+	pickerTarget          editMode
+	pickerLabel           string
+	picker                filepicker.Model
+	showInstances         bool
+	instancesCursor       int
+	instanceEditAction    string
+	confirmDeleteInstance bool
 }
 
 var (
@@ -83,11 +113,25 @@ var (
 	labelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
 )
 
-func newModel(cfg Config, cfgPath, initialStatus string, statusErr bool) model {
+func newModel(launcher LauncherConfig, cfgPath, initialStatus string, statusErr bool) model {
+	active, err := launcher.Active()
+	if err != nil {
+		launcher = defaultLauncherConfig()
+		active, _ = launcher.Active()
+		if initialStatus == "" {
+			initialStatus = err.Error()
+			statusErr = true
+		}
+	}
+	cfg := active.Config()
 	input := textinput.New()
 	input.Prompt = "> "
 	input.CharLimit = 4096
 	input.Width = 70
+	serverInput := textinput.New()
+	serverInput.Prompt = "server> "
+	serverInput.CharLimit = 4096
+	serverInput.Width = 70
 	area := textarea.New()
 	area.Placeholder = "每行一个参数"
 	area.ShowLineNumbers = true
@@ -95,20 +139,44 @@ func newModel(cfg Config, cfgPath, initialStatus string, statusErr bool) model {
 	area.SetHeight(12)
 	logView := viewport.New(80, 18)
 	memory := DetectMemory()
-	return model{
-		cfg: cfg, cfgPath: cfgPath, loading: true,
+	result := model{
+		launcher: launcher, cfg: cfg, cfgPath: cfgPath, loading: true,
+		discoveryGeneration: 1, instancesCursor: launcherInstanceIndex(launcher, cfg.InstanceID),
 		status: initialStatus, statusErr: statusErr,
-		input: input, area: area, logView: logView, memory: memory,
+		input: input, serverInput: serverInput, area: area, logView: logView, memory: memory,
 	}
+	result.loadLatestInstanceLog()
+	return result
+}
+
+func (m *model) loadLatestInstanceLog() {
+	path, output, err := latestLaunchLog(m.cfgPath, m.cfg.InstanceID)
+	if err != nil {
+		if m.status == "" {
+			m.setStatus(err.Error(), true)
+		}
+		return
+	}
+	if path == "" {
+		return
+	}
+	m.logPath = path
+	m.logText = normalizeLog(output)
+	m.logView.SetContent(m.logText)
+	m.logView.GotoBottom()
 }
 
 func (m model) Init() tea.Cmd {
-	return discoverCmd(m.cfg, m.cfgPath)
+	return discoverCmd(m.cfg, m.cfgPath, m.discoveryGeneration)
 }
 
-func discoverCmd(cfg Config, cfgPath string) tea.Cmd {
+func discoverCmd(cfg Config, cfgPath string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
-		return environmentMsg{env: discoverEnvironment(cfg, cfgPath)}
+		return environmentMsg{
+			instanceID: cfg.InstanceID,
+			generation: generation,
+			env:        discoverEnvironment(cfg, cfgPath),
+		}
 	}
 }
 
@@ -117,6 +185,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.Width = max(20, min(100, msg.Width-8))
+		m.serverInput.Width = max(20, msg.Width-10)
 		m.area.SetWidth(max(30, min(100, msg.Width-6)))
 		m.area.SetHeight(max(6, min(16, msg.Height-10)))
 		m.logView.Width = max(20, msg.Width-2)
@@ -126,6 +195,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case environmentMsg:
+		if msg.instanceID != m.cfg.InstanceID || msg.generation != m.discoveryGeneration {
+			return m, nil
+		}
 		m.env = msg.env
 		m.loading = false
 		changed := applyAutoSelections(&m.cfg, m.cfgPath, m.env)
@@ -147,6 +219,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.setStatus("检测完成", false)
 		}
+		if shared := m.sharedDataDirectoryNames(m.cfg.InstanceID); len(shared) > 0 && !m.statusErr {
+			m.setStatus("检测完成；警告：当前实例与 "+strings.Join(shared, "、")+" 共用数据目录", true)
+		}
 		return m, nil
 	case launchOutputMsg:
 		if !m.launching {
@@ -157,12 +232,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case launchStreamClosedMsg:
 		return m, nil
 	case launchFinishedMsg:
+		wasServer := m.activeSession != nil && m.activeSession.spec.InteractiveConsole
 		m.launching = false
+		m.consoleInput = false
+		m.serverStopPending = false
+		m.serverInput.Blur()
+		safeModeRestoreErr := error(nil)
+		if m.safeModeActive {
+			m.safeModeActive = false
+			safeModeRestoreErr = EndMindustrySafeMode(
+				resolveDataDirectory(m.cfg, m.cfgPath),
+				safeModeStateDirectory(m.cfgPath, m.cfg.InstanceID),
+			)
+		}
 		m.showLog = true
 		m.logText = normalizeLog(msg.output)
 		m.logPath = msg.logPath
+		stopped := errors.Is(msg.err, ErrLaunchStopped)
 		m.launchErr = msg.err
-		m.diagnostics = AnalyzeLaunchFailure(msg.output, msg.err)
+		m.launchCleanupErr = safeModeRestoreErr
+		if stopped {
+			m.launchErr = nil
+			m.diagnostics = nil
+		} else {
+			m.diagnostics = AnalyzeLaunchFailure(m.logText, msg.err)
+		}
+		if safeModeRestoreErr != nil {
+			m.appendLog("\n[启动器] 安全模式结束，但恢复模组失败：" + safeModeRestoreErr.Error() + "\n")
+		}
 		m.showAnalysis = len(m.diagnostics) > 0
 		m.logView.SetContent(m.logDisplayContent())
 		if m.showAnalysis {
@@ -170,16 +267,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.logView.GotoBottom()
 		}
-		if msg.err != nil {
+		if safeModeRestoreErr != nil {
+			m.setStatus("游戏已退出，但安全模式恢复失败："+safeModeRestoreErr.Error(), true)
+		} else if stopped {
+			m.setStatus(fmt.Sprintf("服务器已停止（运行 %.1fs）", msg.duration.Seconds()), false)
+		} else if msg.err != nil {
 			m.setStatus(fmt.Sprintf("启动失败（%.1fs）：%s", msg.duration.Seconds(), msg.err), true)
+		} else if wasServer {
+			m.setStatus(fmt.Sprintf("服务器已退出（运行 %.1fs）", msg.duration.Seconds()), false)
 		} else {
 			m.setStatus(fmt.Sprintf("游戏已退出（运行 %.1fs）", msg.duration.Seconds()), false)
 		}
 		return m, nil
 	}
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" && m.launching {
+		m.showLog = true
+		m.setStatus("游戏或服务器仍在运行；请先在游戏中退出，服务器可用 Ctrl+X 安全停止", true)
+		return m, nil
+	}
 
 	if m.showLog {
 		return m.updateLogView(msg)
+	}
+	if m.showPreflight {
+		return m.updatePreflight(msg)
+	}
+	if m.showBackups {
+		return m.updateBackups(msg)
 	}
 	if m.showMods {
 		return m.updateMods(msg)
@@ -194,36 +308,58 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.mode != editNone {
 		return m.updateEditor(msg)
 	}
+	if m.showInstances {
+		return m.updateInstances(msg)
+	}
 
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
 	}
+	if m.confirmQuit && key.String() != "q" &&
+		!((key.String() == "enter" || key.String() == " ") && m.cursor == menuItemCount-1) {
+		m.confirmQuit = false
+	}
 	switch key.String() {
-	case "ctrl+c", "q":
+	case "ctrl+c":
+		return m, tea.Quit
+	case "q":
+		if m.launching {
+			m.setStatus("游戏或服务器仍在运行，不能退出启动器", true)
+			return m, nil
+		}
+		if m.dirty && !m.confirmQuit {
+			m.confirmQuit = true
+			m.setStatus("配置尚未保存；再次按 Q 放弃修改并退出，或按 S 保存", true)
+			return m, nil
+		}
 		return m, tea.Quit
 	case "up", "k":
 		m.cursor = (m.cursor - 1 + menuItemCount) % menuItemCount
 	case "down", "j":
 		m.cursor = (m.cursor + 1) % menuItemCount
 	case "left", "h":
-		if m.cursor == 1 {
-			m.cycleJava(-1)
+		if m.cursor == 0 {
+			return m.switchInstanceBy(-1)
 		} else if m.cursor == 2 {
-			m.cycleJar(-1)
+			m.cycleJava(-1)
 		} else if m.cursor == 3 {
+			m.cycleJar(-1)
+		} else if m.cursor == 4 {
 			return m.cycleProfile(-1)
-		} else if m.cursor == 7 {
+		} else if m.cursor == 8 {
 			m.cycleJVMPreset(-1)
 		}
 	case "right", "l":
-		if m.cursor == 1 {
-			m.cycleJava(1)
+		if m.cursor == 0 {
+			return m.switchInstanceBy(1)
 		} else if m.cursor == 2 {
-			m.cycleJar(1)
+			m.cycleJava(1)
 		} else if m.cursor == 3 {
+			m.cycleJar(1)
+		} else if m.cursor == 4 {
 			return m.cycleProfile(1)
-		} else if m.cursor == 7 {
+		} else if m.cursor == 8 {
 			m.cycleJVMPreset(1)
 		}
 	case "r":
@@ -231,7 +367,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.save()
 	case "d":
-		if m.cursor == 7 {
+		if m.cursor == 8 {
 			preset := ResolveJVMPreset(presetAuto, m.memory)
 			m.cfg.JVMPreset = preset.ID
 			m.cfg.JVMArgs = preset.Args
@@ -256,6 +392,9 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("已取消编辑", false)
 			return m, nil
 		case "enter":
+			if m.mode == editInstanceName {
+				return m.commitInstanceNameEditor()
+			}
 			if m.mode == editJavaPath || m.mode == editJarPath || m.mode == editWorkingDir || m.mode == editDataDir {
 				m.commitPathEditor()
 				return m, nil
@@ -277,64 +416,45 @@ func (m model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) activate() (tea.Model, tea.Cmd) {
-	if m.launching && m.cursor == 0 {
+	if m.launching && m.cursor == 1 {
 		m.setStatus("游戏进程仍在运行；可打开日志页面查看状态", true)
 		return m, nil
 	}
 	switch m.cursor {
 	case 0:
-		if m.loading {
-			m.setStatus("仍在检测 Java，请稍候", true)
-			return m, nil
-		}
-		if err := saveConfig(m.cfgPath, m.cfg); err != nil {
-			m.setStatus(err.Error(), true)
-			return m, nil
-		}
-		m.dirty = false
-		spec, err := prepareLaunch(m.cfg, m.cfgPath)
-		if err != nil {
-			m.setStatus(err.Error(), true)
-			return m, nil
-		}
-		m.setStatus("正在启动: "+formatCommand(spec), false)
-		session := newLaunchSession(spec, m.cfgPath)
-		m.activeSession = session
-		m.launching = true
-		m.showLog = true
-		m.launchErr = nil
-		m.diagnostics = nil
-		m.showAnalysis = false
-		m.logPath = session.writer.logPath()
-		m.logText = ""
-		m.logView.SetContent("")
-		return m, tea.Batch(runLaunchSession(session), waitLaunchOutput(session))
+		m.showInstances = true
+		m.instancesCursor = launcherInstanceIndex(m.launcher, m.cfg.InstanceID)
+		m.confirmDeleteInstance = false
 	case 1:
-		return m, m.beginPathPicker(editJavaPath, "选择 Java 可执行文件")
+		return m.startConfiguredGame()
 	case 2:
-		return m, m.beginPathPicker(editJarPath, "选择可执行游戏 JAR")
+		return m, m.beginPathPicker(editJavaPath, "选择 Java 可执行文件")
 	case 3:
-		return m.cycleProfile(1)
+		return m, m.beginPathPicker(editJarPath, "选择可执行游戏 JAR")
 	case 4:
-		return m, m.beginPathPicker(editWorkingDir, "选择工作目录")
+		return m.cycleProfile(1)
 	case 5:
+		return m, m.beginPathPicker(editWorkingDir, "选择工作目录")
+	case 6:
 		if effectiveAdapterForModel(m).DataDirectoryProperty() == "" {
 			m.setStatus("当前通用配置没有专用数据目录参数；可在 JVM 参数中添加游戏要求的 -D 属性", true)
 			return m, nil
 		}
 		return m, m.beginPathPicker(editDataDir, "选择 "+effectiveAdapterForModel(m).DisplayName()+" 数据目录")
-	case 6:
+	case 7:
 		if effectiveAdapterForModel(m).ID() != profileMindustry {
 			m.setStatus("Mindustry 工具仅在识别或选择 Mindustry 配置后可用", true)
 			return m, nil
 		}
 		m.showTools = true
 		m.refreshBackupCount()
-	case 7:
-		m.beginArgsEditor(editJVMArgs, "编辑 JVM 参数", m.cfg.JVMArgs)
 	case 8:
-		m.beginArgsEditor(editGameArgs, "编辑游戏参数", m.cfg.GameArgs)
+		m.beginArgsEditor(editJVMArgs, "编辑 JVM 参数", m.cfg.JVMArgs)
 	case 9:
+		m.beginArgsEditor(editGameArgs, "编辑游戏参数", m.cfg.GameArgs)
+	case 10:
+		return m.startPreflight()
+	case 11:
 		if m.logText == "" {
 			m.setStatus("还没有可查看的启动日志", true)
 			return m, nil
@@ -342,14 +462,71 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		m.showLog = true
 		m.logView.SetContent(m.logDisplayContent())
 		m.logView.GotoBottom()
-	case 10:
-		return m.startRefresh()
-	case 11:
-		m.save()
 	case 12:
+		return m.startRefresh()
+	case 13:
+		m.save()
+	case 14:
+		if m.launching {
+			m.setStatus("游戏或服务器仍在运行，不能退出启动器", true)
+			return m, nil
+		}
+		if m.dirty && !m.confirmQuit {
+			m.confirmQuit = true
+			m.setStatus("配置尚未保存；再次执行退出可放弃修改，或按 S 保存", true)
+			return m, nil
+		}
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+func (m model) startConfiguredGame() (tea.Model, tea.Cmd) {
+	if m.loading {
+		m.setStatus("仍在检测 Java，请稍候", true)
+		return m, nil
+	}
+	if recovered, err := recoverInstanceSafeMode(m.cfg, m.cfgPath); err != nil {
+		m.setStatus("启动前无法完成安全模式恢复："+err.Error(), true)
+		return m, nil
+	} else if recovered {
+		m.setStatus("已恢复上次中断的安全模式，正在继续启动", false)
+	}
+	m.syncActiveInstance()
+	if err := saveLauncherConfig(m.cfgPath, m.launcher); err != nil {
+		m.setStatus(err.Error(), true)
+		return m, nil
+	}
+	m.dirty = false
+	m.confirmQuit = false
+	spec, err := prepareLaunch(m.cfg, m.cfgPath)
+	if err != nil {
+		m.setStatus(err.Error(), true)
+		return m, nil
+	}
+	return m.startLaunchSpec(spec)
+}
+
+func (m model) startLaunchSpec(spec LaunchSpec) (tea.Model, tea.Cmd) {
+	m.setStatus("正在启动: "+formatCommand(spec), false)
+	session := newLaunchSession(spec, m.cfgPath)
+	m.activeSession = session
+	m.launching = true
+	m.consoleInput = false
+	m.serverStopPending = false
+	m.showLog = true
+	m.showTools = false
+	m.showMods = false
+	m.showBackups = false
+	m.showPreflight = false
+	m.launchErr = nil
+	m.launchCleanupErr = nil
+	m.diagnostics = nil
+	m.showAnalysis = false
+	m.logPath = session.writer.logPath()
+	m.logText = ""
+	m.logView.SetContent("")
+	return m, tea.Batch(runLaunchSession(session), waitLaunchOutput(session))
 }
 
 func (m *model) startRefresh() (tea.Model, tea.Cmd) {
@@ -358,8 +535,9 @@ func (m *model) startRefresh() (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 	m.loading = true
+	m.discoveryGeneration++
 	m.setStatus("正在扫描本地 JDK、JAVA_HOME 和 PATH…", false)
-	return *m, discoverCmd(m.cfg, m.cfgPath)
+	return *m, discoverCmd(m.cfg, m.cfgPath, m.discoveryGeneration)
 }
 
 func (m *model) beginPathEditor(mode editMode, label, value string) {
@@ -640,8 +818,9 @@ func (m *model) cycleProfile(delta int) (tea.Model, tea.Cmd) {
 	m.cfg.GameProfile = profiles[index]
 	m.dirty = true
 	m.loading = true
+	m.discoveryGeneration++
 	m.setStatus("正在按新的游戏配置重新检查 JAR 与 Java…", false)
-	return *m, discoverCmd(m.cfg, m.cfgPath)
+	return *m, discoverCmd(m.cfg, m.cfgPath, m.discoveryGeneration)
 }
 
 func (m *model) cycleJVMPreset(delta int) {
@@ -669,11 +848,13 @@ func (m *model) cycleJVMPreset(delta int) {
 }
 
 func (m *model) save() {
-	if err := saveConfig(m.cfgPath, m.cfg); err != nil {
+	m.syncActiveInstance()
+	if err := saveLauncherConfig(m.cfgPath, m.launcher); err != nil {
 		m.setStatus(err.Error(), true)
 		return
 	}
 	m.dirty = false
+	m.confirmQuit = false
 	m.setStatus("配置已保存到 "+m.cfgPath, false)
 }
 
@@ -684,6 +865,12 @@ func (m *model) setStatus(status string, isError bool) {
 func (m model) View() string {
 	if m.showLog {
 		return m.logViewPage()
+	}
+	if m.showPreflight {
+		return m.preflightView()
+	}
+	if m.showBackups {
+		return m.backupsView()
 	}
 	if m.showMods {
 		return m.modsView()
@@ -697,8 +884,11 @@ func (m model) View() string {
 	if m.picking {
 		return m.pickerView()
 	}
+	if m.showInstances {
+		return m.instancesView()
+	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Java 游戏跨平台启动器"))
+	b.WriteString(titleStyle.Render("Mindustry-first Java 游戏启动器"))
 	if m.dirty {
 		b.WriteString(dimStyle.Render("  [配置未保存]"))
 	}
@@ -706,15 +896,17 @@ func (m model) View() string {
 	b.WriteString(m.summaryView())
 	b.WriteString("\n\n")
 	items := []struct{ label, value string }{
+		{"实例", activeInstanceDisplay(m.launcher)},
 		{"启动游戏", ""},
 		{"Java 路径", shortPath(m.cfg.JavaPath, m.width-28)},
 		{"游戏 JAR", shortPath(m.cfg.JarPath, m.width-28)},
 		{"游戏配置", profileDisplayForModel(m)},
 		{"工作目录", displayDefault(m.cfg.WorkingDirectory, "自动：JAR 所在目录")},
 		{"数据目录", dataDirectoryDisplay(m, m.width-28)},
-		{"Mindustry 工具", "备份 · 模组目录 · 数据目录"},
+		{"Mindustry 工具", "备份/恢复 · 模组 · 安全启动"},
 		{"JVM 参数", fmt.Sprintf("%s · %d 项", jvmPresetDisplay(m.cfg, m.memory), len(m.cfg.JVMArgs))},
 		{"游戏参数", fmt.Sprintf("%d 项", len(m.cfg.GameArgs))},
+		{"启动前检查", "Java · 模块 · 参数 · 目录 · 图形会话"},
 		{"查看上次日志", logFileName(m.logPath)},
 		{"重新检测", ""},
 		{"保存配置", ""},
@@ -779,6 +971,30 @@ func (m model) summaryView() string {
 }
 
 func (m model) updateLogView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.consoleInput {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "esc":
+				m.consoleInput = false
+				m.serverInput.Blur()
+				return m, nil
+			case "enter":
+				command := strings.TrimSpace(m.serverInput.Value())
+				if command != "" {
+					if err := m.activeSession.SendInput(command); err != nil {
+						m.setStatus("发送服务器命令失败："+err.Error(), true)
+					} else {
+						m.appendLog("[控制台] > " + command + "\n")
+					}
+				}
+				m.serverInput.SetValue("")
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.serverInput, cmd = m.serverInput.Update(msg)
+		return m, cmd
+	}
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
 		case "esc", "q":
@@ -797,6 +1013,28 @@ func (m model) updateLogView(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.logView.GotoTop()
 			}
 			return m, nil
+		case "i":
+			if m.launching && m.activeSession != nil && m.activeSession.spec.InteractiveConsole {
+				m.consoleInput = true
+				m.serverInput.Focus()
+				return m, textinput.Blink
+			}
+		case "ctrl+x":
+			if m.launching && m.activeSession != nil && m.activeSession.spec.InteractiveConsole {
+				if !m.serverStopPending {
+					if err := m.activeSession.SendInput("exit"); err != nil {
+						m.setStatus("请求服务器安全退出失败："+err.Error(), true)
+					} else {
+						m.serverStopPending = true
+						m.appendLog("\n[启动器] 已发送 exit，请等待服务器保存并退出；再次按 Ctrl+X 可强制终止。\n")
+					}
+				} else if err := m.activeSession.Stop(); err != nil {
+					m.setStatus("强制停止服务器失败："+err.Error(), true)
+				} else {
+					m.appendLog("\n[启动器] 已强制终止服务器进程。\n")
+				}
+				return m, nil
+			}
 		}
 	}
 	var cmd tea.Cmd
@@ -815,15 +1053,32 @@ func (m *model) appendLog(text string) {
 }
 
 func normalizeLog(text string) string {
+	text = ansi.Strip(text)
 	text = strings.ReplaceAll(text, "\r\n", "\n")
-	return strings.ReplaceAll(text, "\r", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.Map(func(character rune) rune {
+		if (character < 0x20 && character != '\n' && character != '\t') || character == 0x7f {
+			return -1
+		}
+		return character
+	}, text)
 }
 
 func (m model) logViewPage() string {
 	title := "启动日志"
 	state := okStyle.Render("游戏已退出")
+	if m.activeSession != nil && m.activeSession.spec.InteractiveConsole {
+		title = "服务器日志与控制台"
+		state = okStyle.Render("服务器已退出")
+	}
 	if m.launching {
-		state = selectedStyle.Render("游戏正在运行，日志实时更新中…")
+		if m.activeSession != nil && m.activeSession.spec.InteractiveConsole {
+			state = selectedStyle.Render("服务器正在运行，日志实时更新中…")
+		} else {
+			state = selectedStyle.Render("游戏正在运行，日志实时更新中…")
+		}
+	} else if m.launchCleanupErr != nil {
+		state = errStyle.Render("退出后恢复失败：" + m.launchCleanupErr.Error())
 	} else if m.launchErr != nil {
 		state = errStyle.Render("启动失败：" + m.launchErr.Error())
 	}
@@ -836,10 +1091,23 @@ func (m model) logViewPage() string {
 	if len(m.diagnostics) > 0 {
 		diagnosticStatus = fmt.Sprintf(" · %d 条诊断", len(m.diagnostics))
 	}
+	console := ""
+	footer := "↑/↓/PgUp/PgDn 滚动  g/G 顶部/底部  D 切换诊断  Esc 返回"
+	if m.launching && m.activeSession != nil && m.activeSession.spec.InteractiveConsole {
+		stopHelp := "Ctrl+X 安全停止"
+		if m.serverStopPending {
+			stopHelp = "Ctrl+X 强制停止"
+		}
+		footer += "  I 输入命令  " + stopHelp
+		if m.consoleInput {
+			console = "\n" + m.serverInput.View()
+			footer = "Enter 发送命令  Esc 取消输入"
+		}
+	}
 	return titleStyle.Render(title) + "  " + state + diagnosticStatus + "\n" +
 		dimStyle.Render("文件: "+shortPath(path, m.width-8)) + "\n\n" +
-		m.logView.View() + "\n" +
-		dimStyle.Render(fmt.Sprintf("↑/↓/PgUp/PgDn 滚动  g/G 顶部/底部  D 切换诊断  Esc 返回  %d%%", percent))
+		m.logView.View() + console + "\n" +
+		dimStyle.Render(fmt.Sprintf("%s  %d%%", footer, percent))
 }
 
 func (m model) editorView() string {
@@ -857,6 +1125,8 @@ func (m model) editorView() string {
 		title, help, body = "JVM 参数", "每行一个完整参数 · Ctrl+S 保存 · Esc 取消", m.area.View()
 	case editGameArgs:
 		title, help, body = "游戏参数", "每行一个完整参数 · Ctrl+S 保存 · Esc 取消", m.area.View()
+	case editInstanceName:
+		title, help, body = instanceEditorTitle(m.instanceEditAction), "Enter 保存 · Esc 取消", m.input.View()
 	}
 	return titleStyle.Render(title) + "\n\n" + body + "\n\n" + dimStyle.Render(help)
 }

@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const mindustryToolCount = 6
+const mindustryToolCount = 8
 
 type toolResultMsg struct {
 	message string
@@ -38,6 +38,10 @@ func (m model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "ctrl+c":
+		if m.toolBusy {
+			m.toolStatus, m.toolStatusErr = "文件操作正在进行，完成前不能退出启动器", true
+			return m, nil
+		}
 		return m, tea.Quit
 	case "esc", "q":
 		if !m.toolBusy {
@@ -84,22 +88,72 @@ func (m model) activateTool() (tea.Model, tea.Cmd) {
 			return toolResultMsg{message: message, backup: &result}
 		}
 	case 1:
-		return m.openToolDirectory(dataDir, "数据目录")
+		m.showBackups = true
+		m.refreshBackups()
 	case 2:
+		return m.startMindustrySafeMode(dataDir)
+	case 3:
+		return m.openToolDirectory(dataDir, "数据目录")
+	case 4:
 		if dataDir == "" {
 			m.toolStatus, m.toolStatusErr = "请先配置数据目录", true
 			return m, nil
 		}
 		return m.openToolDirectory(filepath.Join(dataDir, "mods"), "模组目录")
-	case 3:
+	case 5:
 		m.showMods = true
 		m.refreshMods()
-	case 4:
+	case 6:
 		return m.openToolDirectory(m.backupDirectory(), "备份目录")
-	case 5:
+	case 7:
 		m.showTools = false
 	}
 	return m, nil
+}
+
+func (m model) startMindustrySafeMode(dataDir string) (tea.Model, tea.Cmd) {
+	if m.launching {
+		m.toolStatus, m.toolStatusErr = "游戏进程仍在运行，不能开始安全模式", true
+		return m, nil
+	}
+	if dataDir == "" {
+		m.toolStatus, m.toolStatusErr = "安全模式需要由启动器管理明确的数据目录", true
+		return m, nil
+	}
+	if m.loading {
+		m.toolStatus, m.toolStatusErr = "仍在检测 Java，请稍候", true
+		return m, nil
+	}
+	m.syncActiveInstance()
+	if err := saveLauncherConfig(m.cfgPath, m.launcher); err != nil {
+		m.toolStatus, m.toolStatusErr = err.Error(), true
+		return m, nil
+	}
+	m.dirty = false
+	spec, err := prepareLaunch(m.cfg, m.cfgPath)
+	if err != nil {
+		m.toolStatus, m.toolStatusErr = err.Error(), true
+		return m, nil
+	}
+	stateDir := safeModeStateDirectory(m.cfgPath, m.cfg.InstanceID)
+	if recovered, err := recoverInstanceSafeMode(m.cfg, m.cfgPath); err != nil {
+		m.toolStatus, m.toolStatusErr = "恢复上次安全模式失败："+err.Error(), true
+		return m, nil
+	} else if recovered {
+		m.toolStatus = "已先恢复上次中断的安全模式"
+	}
+	if err := BeginMindustrySafeMode(dataDir, stateDir); err != nil {
+		m.toolStatus, m.toolStatusErr = err.Error(), true
+		return m, nil
+	}
+	m.safeModeActive = true
+	m.toolStatus, m.toolStatusErr = "本次启动已临时禁用全部模组；退出后会自动恢复", false
+	startedModel, command := m.startLaunchSpec(spec)
+	started := startedModel.(model)
+	started.activeSession.onStarted = func(pid int) error {
+		return SetMindustrySafeModeProcess(dataDir, stateDir, pid)
+	}
+	return started, command
 }
 
 func (m model) openToolDirectory(path, label string) (tea.Model, tea.Cmd) {
@@ -130,7 +184,11 @@ func (m *model) refreshBackupCount() {
 }
 
 func (m model) backupDirectory() string {
-	return filepath.Join(jarDirectory(m.cfg, m.cfgPath), "backups")
+	instanceID := m.cfg.InstanceID
+	if !instanceIDPattern.MatchString(instanceID) {
+		instanceID = defaultInstanceID
+	}
+	return filepath.Join(configDir(m.cfgPath), "backups", instanceID)
 }
 
 func (m model) toolsView() string {
@@ -141,6 +199,8 @@ func (m model) toolsView() string {
 	}
 	items := []struct{ label, value string }{
 		{"立即备份数据", fmt.Sprintf("已有 %d 个备份", m.backupCount)},
+		{"管理与恢复备份", "预览内容 · 恢复前自动保护当前数据"},
+		{"无模组安全启动（仅本次）", "退出后自动恢复；中断后下次启动恢复"},
 		{"打开数据目录", shortPath(dataDir, m.width-30)},
 		{"打开模组目录", shortPath(modsDir, m.width-30)},
 		{"管理模组", "安全启用/禁用 · 支持批量恢复"},

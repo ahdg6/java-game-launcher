@@ -22,6 +22,7 @@ type GameAdapter interface {
 	DataDirectoryProperty() string
 	RequiredJavaModules(mainClass string) []string
 	NeedsGraphics(mainClass string) bool
+	InteractiveConsole(mainClass string) bool
 	NativeArchitectures(files []*zip.File, goos string) []string
 	LaunchArguments(context AdapterLaunchContext) (jvmArgs, gameArgs []string, err error)
 }
@@ -41,6 +42,7 @@ func (genericAdapter) Matches(string) bool                              { return
 func (genericAdapter) DataDirectoryProperty() string                    { return "" }
 func (genericAdapter) RequiredJavaModules(string) []string              { return nil }
 func (genericAdapter) NeedsGraphics(string) bool                        { return true }
+func (genericAdapter) InteractiveConsole(string) bool                   { return false }
 func (genericAdapter) NativeArchitectures([]*zip.File, string) []string { return nil }
 func (genericAdapter) LaunchArguments(AdapterLaunchContext) ([]string, []string, error) {
 	return nil, nil, nil
@@ -59,6 +61,9 @@ func (mindustryAdapter) RequiredJavaModules(string) []string {
 }
 func (mindustryAdapter) NeedsGraphics(mainClass string) bool {
 	return !strings.Contains(mainClass, ".server.") && !strings.HasSuffix(mainClass, "ServerLauncher")
+}
+func (mindustryAdapter) InteractiveConsole(mainClass string) bool {
+	return strings.Contains(mainClass, ".server.") || strings.HasSuffix(mainClass, "ServerLauncher")
 }
 func (mindustryAdapter) NativeArchitectures(files []*zip.File, goos string) []string {
 	return arcNativeArchitectures(files, goos)

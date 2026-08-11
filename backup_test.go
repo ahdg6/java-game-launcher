@@ -52,6 +52,14 @@ func TestCreateDataBackupPreservesUserDataAndExcludesRegenerableData(t *testing.
 	if filepath.Dir(result.Path) != backupDir || filepath.Ext(result.Path) != ".zip" {
 		t.Fatalf("Path = %q, want generated ZIP under %q", result.Path, backupDir)
 	}
+	preview, err := InspectDataBackup(result.Path)
+	if err != nil {
+		t.Fatalf("InspectDataBackup() error = %v", err)
+	}
+	if preview.FileCount != result.FileCount || preview.UncompressedBytes != uint64(result.SourceBytes) ||
+		!slices.Contains(preview.TopLevel, "saves") || !slices.Contains(preview.TopLevel, "settings.bin") {
+		t.Fatalf("BackupPreview = %#v", preview)
+	}
 
 	names := backupTestZipNames(t, result.Path)
 	for _, want := range []string{
@@ -125,6 +133,9 @@ func TestRestoreDataBackupRejectsZipSlip(t *testing.T) {
 	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed restore should not publish destination, stat error = %v", err)
 	}
+	if _, err := InspectDataBackup(archive); err == nil || !strings.Contains(err.Error(), "不安全") {
+		t.Fatalf("InspectDataBackup() error = %v, want unsafe-path error", err)
+	}
 }
 
 func TestRestoreDataBackupDoesNotOverwriteByDefault(t *testing.T) {
@@ -161,6 +172,23 @@ func TestRestoreDataBackupDoesNotOverwriteByDefault(t *testing.T) {
 	}
 	if got := string(backupTestReadFile(t, filepath.Join(destination, "saves", "new.msav"))); got != "new save" {
 		t.Fatalf("save = %q, want new save", got)
+	}
+}
+
+func TestRestoreDataBackupRefusesFileDirectoryTypeReplacement(t *testing.T) {
+	source := t.TempDir()
+	writeBackupTestFile(t, filepath.Join(source, "mods", "example.jar"), "mod")
+	archive := filepath.Join(t.TempDir(), "backup.zip")
+	if _, err := CreateDataBackup(source, archive); err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	writeBackupTestFile(t, filepath.Join(destination, "mods"), "must stay a file")
+	if _, err := RestoreDataBackup(archive, destination, RestoreOptions{Overwrite: true}); err == nil || !strings.Contains(err.Error(), "目录") {
+		t.Fatalf("type-conflict restore error = %v", err)
+	}
+	if got := string(backupTestReadFile(t, filepath.Join(destination, "mods"))); got != "must stay a file" {
+		t.Fatalf("conflicting path changed to %q", got)
 	}
 }
 

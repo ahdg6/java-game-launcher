@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,12 +19,14 @@ var (
 
 func main() {
 	configPath := flag.String("config", defaultConfigPath(), "配置文件路径")
+	instanceSelector := flag.String("instance", "", "选择实例（优先匹配 ID，名称必须唯一）")
 	launch := flag.Bool("launch", false, "不进入 TUI，直接启动游戏")
 	dryRun := flag.Bool("dry-run", false, "检查并打印启动命令，但不执行")
 	diagnose := flag.Bool("diagnose", false, "打印 Java/JAR 检测结果")
+	preflight := flag.Bool("preflight", false, "执行完整启动前检查（含 JVM 参数试运行）")
 	showVersion := flag.Bool("version", false, "显示版本")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Java 游戏跨平台启动器\n\n用法: %s [选项] [-- 游戏参数...]\n\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(flag.CommandLine.Output(), "Mindustry-first Java 游戏启动器\n\n用法: %s [选项] [-- 游戏参数...]\n\n", filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -51,30 +55,81 @@ func main() {
 			}
 		}
 	}
-	cfg, loadErr := loadConfig(loadPath)
+	launcherCfg, loadErr := loadLauncherConfig(loadPath)
+	cfg := defaultConfig()
+	loadWarnings := []string(nil)
+	recoveredSafeModes := []string(nil)
+	selectedName := ""
+	var selectionErr error
+	var recoveryErr error
+	if loadErr == nil {
+		loadWarnings = launcherCfg.Warnings
+	}
+	if loadErr == nil {
+		var selected *InstanceConfig
+		if *instanceSelector == "" {
+			selected, selectionErr = launcherCfg.Active()
+		} else {
+			selected, selectionErr = launcherCfg.ResolveInstance(*instanceSelector)
+		}
+		if selectionErr != nil {
+			selected, _ = launcherCfg.Active()
+		}
+		if selected != nil {
+			cfg = selected.Config()
+			selectedName = selected.Name
+			launcherCfg.ActiveInstanceID = selected.ID
+		}
+	}
+	cliMode := *launch || *dryRun || *diagnose || *preflight
+	if loadErr == nil {
+		if cliMode && selectionErr == nil {
+			var recovered bool
+			recovered, recoveryErr = recoverInstanceSafeMode(cfg, *configPath)
+			if recovered {
+				recoveredSafeModes = append(recoveredSafeModes, selectedName)
+			}
+		} else if !cliMode {
+			recoveredSafeModes, recoveryErr = recoverLauncherSafeModes(launcherCfg, *configPath)
+		}
+	}
+	if cliMode {
+		runCLI(cfg, *configPath, *launch, *dryRun, *diagnose, *preflight, errors.Join(loadErr, selectionErr, recoveryErr), flag.Args())
+		return
+	}
 	if len(flag.Args()) > 0 {
 		cfg.GameArgs = append(cfg.GameArgs, flag.Args()...)
 	}
-	if *launch || *dryRun || *diagnose {
-		runCLI(cfg, *configPath, *launch, *dryRun, *diagnose, loadErr)
-		return
+	if selected := launcherCfg.InstanceByID(cfg.InstanceID); selected != nil {
+		selected.ApplyConfig(cfg)
 	}
 	status := "正在扫描本地 JDK、JAVA_HOME 和 PATH…"
 	statusErr := false
 	if loadErr != nil {
 		status = loadErr.Error() + "；已使用默认配置"
 		statusErr = true
+	} else if recoveryErr != nil {
+		status = "自动恢复上次安全模式失败：" + recoveryErr.Error()
+		statusErr = true
+	} else if selectionErr != nil {
+		status = selectionErr.Error() + "；已回退到配置中的活动实例"
+		statusErr = true
 	} else if legacyLoaded {
 		status = "已读取旧版 Mindustry 配置；保存后将迁移为 " + configFileName
+	} else if len(loadWarnings) > 0 {
+		status = strings.Join(loadWarnings, "；")
+		statusErr = true
+	} else if len(recoveredSafeModes) > 0 {
+		status = "已恢复上次中断的安全模式模组：" + strings.Join(recoveredSafeModes, "、")
 	}
-	p := tea.NewProgram(newModel(cfg, *configPath, status, statusErr), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(launcherCfg, *configPath, status, statusErr), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "启动 TUI 失败:", err)
 		os.Exit(1)
 	}
 }
 
-func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose bool, loadErr error) {
+func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose, preflight bool, loadErr error, extraGameArgs []string) {
 	if loadErr != nil {
 		fmt.Fprintln(os.Stderr, loadErr)
 		os.Exit(1)
@@ -83,7 +138,7 @@ func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose bool, loadErr e
 	changed := applyAutoSelections(&cfg, cfgPath, env)
 	if diagnose {
 		printDiagnostics(env)
-		if !launch && !dryRun {
+		if !launch && !dryRun && !preflight {
 			return
 		}
 	}
@@ -91,6 +146,19 @@ func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose bool, loadErr e
 		if err := saveConfig(cfgPath, cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
+		}
+	}
+	if len(extraGameArgs) > 0 {
+		cfg.GameArgs = append(append([]string{}, cfg.GameArgs...), extraGameArgs...)
+	}
+	if preflight {
+		report := RunLaunchPreflight(cfg, cfgPath)
+		printPreflightReport(report)
+		if !report.Ready {
+			os.Exit(1)
+		}
+		if !launch && !dryRun {
+			return
 		}
 	}
 	spec, err := prepareLaunch(cfg, cfgPath)
@@ -108,10 +176,57 @@ func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose bool, loadErr e
 			fmt.Fprintln(os.Stderr, "无法启动:", err)
 			os.Exit(1)
 		}
-		if err := spec.Command.Run(); err != nil {
+		if err := runCLIProcess(spec, cfgPath); err != nil {
 			fmt.Fprintln(os.Stderr, "游戏进程异常结束:", err)
 			os.Exit(1)
 		}
+	}
+}
+
+func runCLIProcess(spec LaunchSpec, cfgPath string) error {
+	session := newLaunchSession(spec, cfgPath)
+	if path := session.writer.logPath(); path != "" {
+		fmt.Fprintln(os.Stderr, "[启动器] 持久日志:", path)
+	}
+	spec.Command.Stdout = io.MultiWriter(os.Stdout, session.writer)
+	spec.Command.Stderr = io.MultiWriter(os.Stderr, session.writer)
+	err := spec.Command.Run()
+	if err != nil {
+		_, _ = fmt.Fprintf(session.writer, "\n[启动器] 游戏进程异常结束: %v\n", err)
+	} else {
+		_, _ = io.WriteString(session.writer, "\n[启动器] 游戏进程已退出。\n")
+	}
+	output := session.writer.output()
+	logPath := session.writer.logPath()
+	session.writer.close()
+	if err != nil {
+		if logPath != "" {
+			fmt.Fprintln(os.Stderr, "[启动器] 完整日志已保存:", logPath)
+		}
+		for _, diagnostic := range AnalyzeLaunchFailure(normalizeLog(output), err) {
+			fmt.Fprintf(os.Stderr, "[诊断] %s：%s\n", diagnostic.Title, diagnostic.Summary)
+			for _, suggestion := range diagnostic.Suggestions {
+				fmt.Fprintln(os.Stderr, "  -", suggestion)
+			}
+		}
+	}
+	return err
+}
+
+func printPreflightReport(report PreflightReport) {
+	for _, check := range report.Checks {
+		mark := "OK"
+		if check.Level == PreflightWarning {
+			mark = "WARN"
+		} else if check.Level == PreflightError {
+			mark = "ERROR"
+		}
+		fmt.Printf("[%s] %s: %s\n", mark, check.Name, check.Summary)
+	}
+	if report.Ready {
+		fmt.Println("启动前检查通过")
+	} else {
+		fmt.Println("启动前检查失败")
 	}
 }
 

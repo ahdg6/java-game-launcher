@@ -1,8 +1,8 @@
 # Java Game Launcher
 
-一个轻量的跨平台 Java 游戏 TUI 启动器，使用 Go、Bubble Tea 构建。支持 Windows、Linux 和 macOS，可自动发现便携 JRE/JDK、检查 JAR 所需 Java 版本和运行时架构，并管理 JVM 参数、游戏参数、数据目录与启动日志。
+一个 Mindustry-first 的跨平台 Java 游戏 TUI 启动器，使用 Go、Bubble Tea 构建。支持 Windows、Linux 和 macOS，可自动发现便携 JRE/JDK、检查 JAR 所需 Java 版本和运行时架构，并管理多实例、JVM 参数、游戏数据、模组、备份、服务器控制台与实时日志。通用层只保留对启动流程可控的可执行 Java JAR 的轻量支持；Minecraft 等需要版本资产、认证和依赖解析的生态明确不在范围内。
 
-目前内置两个游戏配置：
+目前内置三个游戏配置：
 
 - `auto`：根据 JAR 的 `Main-Class` 自动识别；
 - `generic`：适用于普通可执行 Java JAR；
@@ -43,9 +43,13 @@ Game/
 - `D`：选中 JVM 参数时恢复低停顿默认值；
 - `S` 保存，`R` 重新检测，`Q` 退出。
 
-游戏的 stdout/stderr 会实时显示在可滚动日志页中。方向键、`PgUp`/`PgDn`、`g`/`G` 可浏览日志，完整日志保存在配置目录的 `logs/` 中。
+主菜单第一项是实例。可用 `←` / `→` 快速切换，或进入管理页后新建、克隆、重命名、二次确认删除及排序。实例 ID 自动生成且重命名后保持稳定；每个实例独立保存 Java、JAR、工作目录、数据目录和参数。克隆实例会自动改用独立的 `instances/<id>/game_data`，若高级用户让两个实例共用同一数据目录，TUI 会明确警告。
 
-启动失败后，日志页会在原始输出前展示智能诊断和修复建议。目前可识别 Java 版本/架构、缺失模块或类、无效 JVM 参数、内存不足、图形环境、权限和原生库问题；按 `D` 可切换诊断与原始日志。Mindustry 启动前还会确认完整运行时包含 `java.desktop` 和 `jdk.unsupported`。
+游戏的 stdout/stderr 会实时显示在可滚动日志页中。方向键、`PgUp`/`PgDn`、`g`/`G` 可浏览日志，完整日志按实例保存在配置目录的 `logs/<instance-id>/` 中；启动器重开或切换实例时会自动载入该实例最新日志的尾部。TUI 展示层会剥离 ANSI/终端控制序列，避免游戏颜色码清屏或扰乱界面；文件仍保留原始输出。启动失败不会退出或清空 TUI，诊断、原始输出和持久日志路径都留在日志页。
+
+Mindustry Server JAR 会自动识别为无图形交互会话。日志页按 `I` 输入服务器命令；`Ctrl+X` 第一次发送 `exit` 让服务器保存并安全退出，再按一次才强制终止。游戏或服务器运行时，启动器会阻止切换实例和正常退出，避免日志、控制台或安全恢复状态绑定到错误实例。
+
+启动失败后，日志页会在原始输出前展示智能诊断和修复建议。目前可识别 Java 版本/架构、缺失模块或类、无效 JVM 参数、内存不足、图形环境、权限和原生库问题；按 `D` 可切换诊断与原始日志。Mindustry 不依赖 JavaFX，因此启动器不会要求 JavaFX；它会检查实际需要的标准运行时模块 `java.desktop` 和 `jdk.unsupported`，从而拒绝缺模块的精简 jlink 运行时。
 
 ## 游戏配置与特殊参数
 
@@ -59,6 +63,7 @@ type GameAdapter interface {
     DataDirectoryProperty() string
     RequiredJavaModules(mainClass string) []string
     NeedsGraphics(mainClass string) bool
+    InteractiveConsole(mainClass string) bool
     NativeArchitectures(files []*zip.File, goos string) []string
     LaunchArguments(context AdapterLaunchContext) (jvmArgs, gameArgs []string, err error)
 }
@@ -80,9 +85,17 @@ Mindustry 配置首次默认使用 JAR 旁的 `game_data`，自动创建并传�
 
 ### Mindustry 工具
 
-主菜单的 Mindustry 工具页可以打开数据、模组和备份目录，并创建安全 ZIP 备份。备份保留存档、设置、模组、地图和未知用户数据，排除可再生的 `cache`、`tmp`，且不会跟随符号链接。底层恢复服务会防止 Zip Slip，默认拒绝覆盖已有文件。
+主菜单的 Mindustry 工具页可以打开数据、模组和备份目录，并创建安全 ZIP 备份。备份按实例保存在 `backups/<instance-id>/`，保留存档、设置、模组、地图和未知用户数据，排除可再生的 `cache`、`tmp`，且不会跟随符号链接。
+
+备份管理页会先用与恢复相同的安全规则检查 ZIP，再预览文件数、解压大小和顶层内容。恢复需要二次确认；覆盖当前同名文件前，启动器会先自动创建一份当前数据保护备份。恢复底层使用完整暂存、Zip Slip/符号链接/CRC 防护，验证或冲突失败不会发布部分目录。
 
 模组管理页支持目录、JAR、ZIP 和 `.disabled`，会读取 `mod.json`、`plugin.json`、`mod.hjson` 中的名称、版本和作者。单项启停使用可逆重命名；批量禁用要求二次确认，并可在当前会话恢复。游戏运行期间禁止改变模组状态。
+
+“无模组安全启动（仅本次）”会先原子写入恢复计划，再临时禁用全部已启用模组。游戏退出后自动恢复；若启动器或机器中断，下次启动会依据带校验和且绑定实例的恢复标记继续恢复。恢复标记还会绑定实际游戏进程；若另一启动器发现该进程仍存活，会保留禁用状态而不会在运行中的游戏下方提前恢复模组。任何路径冲突、越界或符号链接异常都会停止恢复而不是猜测或删除文件。
+
+### 启动前完整检查
+
+主菜单“启动前检查”复用真实启动计划，检查 Java 版本/架构、JAR Main-Class、Mindustry 必需模块、原生库兼容性、工作与数据目录写权限、图形会话，以及 JVM 参数试运行。试运行会临时覆盖为 16–64 MiB 小堆并跳过 `AlwaysPreTouch`，因此能发现无效选项而不会为了检查触碰数 GiB 内存。检查通过后可直接按 `Enter` 启动。
 
 ## 默认 JVM 参数
 
@@ -108,9 +121,13 @@ Mindustry 配置首次默认使用 JAR 旁的 `game_data`，自动创建并传�
 java-game-launcher --launch
 java-game-launcher --dry-run
 java-game-launcher --diagnose
+java-game-launcher --preflight
+java-game-launcher --instance server --launch
 java-game-launcher --launch -- -debug
 java-game-launcher --config ./custom.json
 ```
+
+`--launch` 保留终端 stdin/stdout/stderr（服务器仍可直接输入命令），同时也写入按实例隔离的持久日志；异常退出会在终端末尾打印同一套智能诊断与日志路径。命令行追加的 `-- 游戏参数` 只影响本次运行，不会写回实例配置。
 
 ## 配置格式
 
@@ -118,17 +135,38 @@ java-game-launcher --config ./custom.json
 
 ```json
 {
-  "version": 5,
-  "game_profile": "auto",
-  "java_path": "openjdk-21/bin/java.exe",
-  "jar_path": "MindustryX-Desktop.jar",
-  "working_directory": "",
-  "data_directory": "game_data",
-  "jvm_preset": "auto",
-  "jvm_args": ["-Xms2g", "-Xmx2g", "-XX:+UseG1GC"],
-  "game_args": []
+  "version": 6,
+  "active_instance_id": "desktop",
+  "instances": [
+    {
+      "id": "desktop",
+      "name": "原版桌面",
+      "game_profile": "mindustry",
+      "java_path": "openjdk-21/bin/java.exe",
+      "jar_path": "MindustryX-Desktop.jar",
+      "working_directory": "",
+      "data_directory": "game_data",
+      "jvm_preset": "auto",
+      "jvm_args": ["-Xms2g", "-Xmx2g", "-XX:+UseG1GC"],
+      "game_args": []
+    },
+    {
+      "id": "server",
+      "name": "本地服务器",
+      "game_profile": "mindustry",
+      "java_path": "openjdk-21/bin/java.exe",
+      "jar_path": "server-release.jar",
+      "working_directory": "server",
+      "data_directory": "instances/server/game_data",
+      "jvm_preset": "auto",
+      "jvm_args": ["-Xms2g", "-Xmx2g", "-XX:+UseG1GC"],
+      "game_args": []
+    }
+  ]
 }
 ```
+
+v1–v5 会在内存中无损迁移成一个 `default` 实例，加载本身不会改写文件。第一次保存 v6 时，同名旧配置会保留为 `.v5.bak`；旧的 `mindustry-launcher.json` 则原样保留并写入新的 `java-game-launcher.json`。配置替换在 Unix 上使用同步后的原子 rename，在 Windows 上使用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`。
 
 Java、JAR 和工作目录的相对路径按配置文件目录解析；数据目录相对 JAR 所在目录解析。通用配置不会使用专用数据目录字段。
 

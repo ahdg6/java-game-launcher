@@ -69,7 +69,7 @@ func AnalyzeLaunchFailure(output string, processErr error) []Diagnostic {
 			Title:    "Java 版本过低",
 			Summary:  summary,
 			Suggestions: []string{
-				"改用游戏要求版本或更高版本的 64 位 Java；Mindustry 建议优先使用 Java 17 或 21 LTS。",
+				"改用游戏要求版本或更高版本的 64 位 Java；Mindustry 可优先使用 Java 17、21 或 25 LTS。",
 				"在启动器中重新检测 Java，并确认选中的不是旧 JRE。",
 			},
 		})

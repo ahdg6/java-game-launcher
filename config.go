@@ -2,16 +2,14 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 )
 
-const configVersion = 5
+const configVersion = 6
 
 const presetCustom = "custom"
 
@@ -21,7 +19,11 @@ const (
 )
 
 type Config struct {
-	Version          int      `json:"version"`
+	// Version and InstanceID belong to the compatibility view used by the
+	// launcher and the current TUI. v6 persists them on LauncherConfig and
+	// InstanceConfig respectively instead of duplicating them in every instance.
+	Version          int      `json:"version,omitempty"`
+	InstanceID       string   `json:"-"`
 	GameProfile      string   `json:"game_profile"`
 	JavaPath         string   `json:"java_path"`
 	JarPath          string   `json:"jar_path"`
@@ -35,6 +37,7 @@ type Config struct {
 func defaultConfig() Config {
 	return Config{
 		Version:       configVersion,
+		InstanceID:    defaultInstanceID,
 		GameProfile:   profileAuto,
 		DataDirectory: "game_data",
 		JVMPreset:     presetAuto,
@@ -74,16 +77,21 @@ func legacyDefaultJVMArgs() []string {
 }
 
 func loadConfig(path string) (Config, error) {
-	cfg := defaultConfig()
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return cfg, nil
-	}
+	launcher, err := loadLauncherConfig(path)
 	if err != nil {
-		return cfg, fmt.Errorf("读取配置: %w", err)
+		return defaultConfig(), err
 	}
+	active, err := launcher.Active()
+	if err != nil {
+		return defaultConfig(), err
+	}
+	return active.Config(), nil
+}
+
+func decodeLegacyConfig(data []byte) (Config, error) {
+	cfg := defaultConfig()
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("解析配置 %s: %w", path, err)
+		return cfg, err
 	}
 	loadedVersion := cfg.Version
 	if cfg.GameProfile == "" {
@@ -137,28 +145,25 @@ func normalizeDataDirectoryArg(args []string, dataDirectory string, loadedVersio
 }
 
 func saveConfig(path string, cfg Config) error {
-	cfg.Version = configVersion
-	cfg.JVMArgs, cfg.DataDirectory = normalizeDataDirectoryArg(cfg.JVMArgs, cfg.DataDirectory, configVersion)
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	launcher, err := loadLauncherConfig(path)
 	if err != nil {
-		return fmt.Errorf("编码配置: %w", err)
+		if _, statErr := os.Stat(path); statErr == nil {
+			return err
+		}
+		launcher = defaultLauncherConfig()
 	}
-	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("创建配置目录: %w", err)
+	instance := launcher.InstanceByID(cfg.InstanceID)
+	if instance == nil {
+		if cfg.InstanceID != "" {
+			return fmt.Errorf("保存配置：实例 %q 不存在", cfg.InstanceID)
+		}
+		instance, err = launcher.Active()
+		if err != nil {
+			return err
+		}
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("写入临时配置: %w", err)
-	}
-	if runtime.GOOS == "windows" {
-		_ = os.Remove(path)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("替换配置: %w", err)
-	}
-	return nil
+	instance.ApplyConfig(cfg)
+	return saveLauncherConfig(path, launcher)
 }
 
 func configDir(configPath string) string {

@@ -350,6 +350,55 @@ type restoreEntry struct {
 	isDir bool
 }
 
+// BackupPreview is a validated, read-only summary used by the TUI before a
+// restore. Inspecting uses the same path and entry validation as restoration,
+// so an unsafe archive is rejected before the confirmation prompt is shown.
+type BackupPreview struct {
+	Path              string
+	FileCount         int
+	DirectoryCount    int
+	UncompressedBytes uint64
+	TopLevel          []string
+}
+
+func InspectDataBackup(zipPath string) (BackupPreview, error) {
+	preview := BackupPreview{Path: zipPath}
+	if strings.TrimSpace(zipPath) == "" {
+		return preview, errors.New("检查备份：ZIP 路径不能为空")
+	}
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return preview, fmt.Errorf("检查备份：打开 ZIP：%w", err)
+	}
+	defer zr.Close()
+	entries, err := validateRestoreEntries(zr.File)
+	if err != nil {
+		return preview, err
+	}
+	topLevel := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.isDir {
+			preview.DirectoryCount++
+		} else {
+			preview.FileCount++
+			preview.UncompressedBytes += entry.file.UncompressedSize64
+		}
+		name := entry.rel
+		if slash := strings.IndexByte(name, '/'); slash >= 0 {
+			name = name[:slash]
+		}
+		if name != "" {
+			topLevel[name] = struct{}{}
+		}
+	}
+	preview.TopLevel = make([]string, 0, len(topLevel))
+	for name := range topLevel {
+		preview.TopLevel = append(preview.TopLevel, name)
+	}
+	sort.Strings(preview.TopLevel)
+	return preview, nil
+}
+
 // RestoreDataBackup validates and stages the entire ZIP before copying it into
 // destination. With no options, or a zero RestoreOptions, existing files cause
 // an error. Pass RestoreOptions{Overwrite: true} to replace existing files.
@@ -559,8 +608,8 @@ func preflightRestoreDestination(destination string, entries []restoreEntry, ove
 		if !overwrite {
 			return false, fmt.Errorf("恢复备份：目标已存在 %s；如需替换请启用 Overwrite", entry.rel)
 		}
-		if !entry.isDir && existing.IsDir() {
-			return false, fmt.Errorf("恢复备份：不能用文件覆盖已有目录 %s", entry.rel)
+		if entry.isDir != existing.IsDir() {
+			return false, fmt.Errorf("恢复备份：不能用%s覆盖已有%s %s", restoreEntryKind(entry.isDir), restoreEntryKind(existing.IsDir()), entry.rel)
 		}
 	}
 	return true, nil
@@ -605,12 +654,7 @@ func mergeRestoreStage(stage, destination string, entries []restoreEntry, overwr
 		target := filepath.Join(destination, filepath.FromSlash(entry.rel))
 		info, err := os.Lstat(target)
 		if err == nil && !info.IsDir() {
-			if !overwrite {
-				return fmt.Errorf("恢复备份：目标已存在 %s", entry.rel)
-			}
-			if err := os.Remove(target); err != nil {
-				return fmt.Errorf("恢复备份：替换 %s：%w", entry.rel, err)
-			}
+			return fmt.Errorf("恢复备份：目录位置被文件占用 %s", entry.rel)
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("恢复备份：检查 %s：%w", entry.rel, err)
 		}
@@ -629,17 +673,8 @@ func mergeRestoreStage(stage, destination string, entries []restoreEntry, overwr
 			return fmt.Errorf("恢复备份：创建 %s 的上级目录：%w", entry.rel, err)
 		}
 		if overwrite {
-			if err := os.Rename(source, target); err != nil {
-				// Windows does not replace an existing file with os.Rename.
-				if runtime.GOOS != "windows" {
-					return fmt.Errorf("恢复备份：写入 %s：%w", entry.rel, err)
-				}
-				if removeErr := os.Remove(target); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-					return fmt.Errorf("恢复备份：替换 %s：%w", entry.rel, removeErr)
-				}
-				if err := os.Rename(source, target); err != nil {
-					return fmt.Errorf("恢复备份：写入 %s：%w", entry.rel, err)
-				}
+			if err := replaceFileAtomic(source, target); err != nil {
+				return fmt.Errorf("恢复备份：原子写入 %s：%w", entry.rel, err)
 			}
 		} else {
 			// Hard-linking refuses to overwrite a file created after preflight.
@@ -663,6 +698,13 @@ func mergeRestoreStage(stage, destination string, entries []restoreEntry, overwr
 		_ = os.Chtimes(target, entry.file.Modified, entry.file.Modified)
 	}
 	return nil
+}
+
+func restoreEntryKind(directory bool) string {
+	if directory {
+		return "目录"
+	}
+	return "文件"
 }
 
 func rejectSymlinkAncestors(filePath string) error {
