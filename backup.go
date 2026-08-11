@@ -90,6 +90,10 @@ func CreateDataBackup(dataDir, destination string) (BackupResult, error) {
 	if err != nil {
 		return result, err
 	}
+	finalPath, err = canonicalizePathAncestors(finalPath)
+	if err != nil {
+		return result, fmt.Errorf("创建备份：解析备份位置：%w", err)
+	}
 	if err := rejectSymlinkAncestors(filepath.Dir(finalPath)); err != nil {
 		return result, fmt.Errorf("创建备份：备份位置不安全：%w", err)
 	}
@@ -432,6 +436,10 @@ func RestoreDataBackup(zipPath, destination string, options ...RestoreOptions) (
 	if err != nil {
 		return result, fmt.Errorf("恢复备份：解析目标目录：%w", err)
 	}
+	destination, err = canonicalizePathAncestors(destination)
+	if err != nil {
+		return result, fmt.Errorf("恢复备份：解析目标目录：%w", err)
+	}
 	if err := rejectSymlinkAncestors(destination); err != nil {
 		return result, fmt.Errorf("恢复备份：目标目录不安全：%w", err)
 	}
@@ -725,6 +733,41 @@ func rejectSymlinkAncestors(filePath string) error {
 			return nil
 		}
 		current = parent
+	}
+}
+
+// canonicalizePathAncestors resolves the deepest existing prefix and then
+// appends any missing path components. macOS commonly exposes temporary paths
+// through /var -> /private/var; operating on the resolved path preserves the
+// symlink-safety invariant without rejecting that system alias.
+func canonicalizePathAncestors(filePath string) (string, error) {
+	absolute, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", err
+	}
+	probe := absolute
+	missing := make([]string, 0, 4)
+	for {
+		_, statErr := os.Lstat(probe)
+		if statErr == nil {
+			resolved, err := filepath.EvalSymlinks(probe)
+			if err != nil {
+				return "", err
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return "", fmt.Errorf("找不到可解析的路径上级：%s", absolute)
+		}
+		missing = append(missing, filepath.Base(probe))
+		probe = parent
 	}
 }
 

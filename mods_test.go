@@ -55,12 +55,16 @@ author: Carol # release author
 	if len(mods) != 3 {
 		t.Fatalf("len(mods) = %d, want 3: %#v", len(mods), mods)
 	}
+	canonicalModsDir, err := filepath.EvalSymlinks(modsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	byFile := make(map[string]MindustryMod, len(mods))
 	for _, mod := range mods {
 		byFile[filepath.Base(mod.Path)] = mod
-		if !samePath(filepath.Dir(mod.Path), modsDir) {
-			t.Errorf("mod path %q is not under %q", mod.Path, modsDir)
+		if !samePath(filepath.Dir(mod.Path), canonicalModsDir) {
+			t.Errorf("mod path %q is not under %q", mod.Path, canonicalModsDir)
 		}
 		if mod.Size <= 0 {
 			t.Errorf("mod %q Size = %d, want positive", mod.Path, mod.Size)

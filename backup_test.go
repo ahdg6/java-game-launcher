@@ -114,6 +114,33 @@ func TestCreateDataBackupDestinationInsideDataDirectoryDoesNotRecurse(t *testing
 	}
 }
 
+func TestBackupAndRestoreCanonicalizeSymlinkedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating directory symlinks commonly requires elevated privileges on Windows")
+	}
+	realRoot := t.TempDir()
+	aliasRoot := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(realRoot, "data")
+	writeBackupTestFile(t, filepath.Join(dataDir, "settings.bin"), "settings")
+	result, err := CreateDataBackup(dataDir, filepath.Join(aliasRoot, "backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(result.Path, aliasRoot) {
+		t.Fatalf("backup path was not canonicalized: %q", result.Path)
+	}
+	restoreAlias := filepath.Join(aliasRoot, "restored")
+	if _, err := RestoreDataBackup(result.Path, restoreAlias); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(backupTestReadFile(t, filepath.Join(realRoot, "restored", "settings.bin"))); got != "settings" {
+		t.Fatalf("restored settings = %q", got)
+	}
+}
+
 func TestRestoreDataBackupRejectsZipSlip(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "malicious.zip")
 	createBackupTestZip(t, archive, map[string]string{
