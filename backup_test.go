@@ -49,8 +49,12 @@ func TestCreateDataBackupPreservesUserDataAndExcludesRegenerableData(t *testing.
 	if result.ArchiveBytes <= 0 || result.SourceBytes <= 0 {
 		t.Fatalf("unexpected sizes: archive=%d source=%d", result.ArchiveBytes, result.SourceBytes)
 	}
-	if filepath.Dir(result.Path) != backupDir || filepath.Ext(result.Path) != ".zip" {
-		t.Fatalf("Path = %q, want generated ZIP under %q", result.Path, backupDir)
+	canonicalBackupDir, err := filepath.EvalSymlinks(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(result.Path) != canonicalBackupDir || filepath.Ext(result.Path) != ".zip" {
+		t.Fatalf("Path = %q, want generated ZIP under %q", result.Path, canonicalBackupDir)
 	}
 	preview, err := InspectDataBackup(result.Path)
 	if err != nil {
