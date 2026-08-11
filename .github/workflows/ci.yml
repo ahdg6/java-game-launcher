@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - run: go test ./...
+      - run: go vet ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            output: java-game-launcher-windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            output: java-game-launcher-windows-arm64.exe
+          - goos: linux
+            goarch: amd64
+            output: java-game-launcher-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: java-game-launcher-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            output: java-game-launcher-macos-amd64
+          - goos: darwin
+            goarch: arm64
+            output: java-game-launcher-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags "-s -w" -o "dist/${{ matrix.output }}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}

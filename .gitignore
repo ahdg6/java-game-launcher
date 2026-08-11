@@ -1,0 +1,10 @@
+/dist/
+/mindustry-launcher
+/mindustry-launcher.exe
+/mindustry-launcher.json
+/java-game-launcher
+/java-game-launcher.exe
+/java-game-launcher.json
+/game_data/
+/logs/
+*.tmp
