@@ -11,8 +11,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24.x"
           cache: true
@@ -44,8 +44,8 @@ jobs:
             goarch: arm64
             output: java-game-launcher-macos-arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24.x"
           cache: true
@@ -55,7 +55,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -ldflags "-s -w" -o "dist/${{ matrix.output }}" .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.output }}
           path: dist/${{ matrix.output }}
