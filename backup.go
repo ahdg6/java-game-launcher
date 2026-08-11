@@ -316,6 +316,14 @@ func publishBackupFile(tmpPath, finalPath string) error {
 // ListBackups returns regular .zip files in directory, newest first. A missing
 // directory is treated as an empty backup collection.
 func ListBackups(directory string) ([]BackupInfo, error) {
+	if strings.TrimSpace(directory) == "" {
+		return nil, errors.New("列出备份：目录不能为空")
+	}
+	canonicalDirectory, err := canonicalizePathAncestors(directory)
+	if err != nil {
+		return nil, fmt.Errorf("列出备份：解析目录：%w", err)
+	}
+	directory = canonicalDirectory
 	entries, err := os.ReadDir(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return []BackupInfo{}, nil
