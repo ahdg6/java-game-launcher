@@ -14,6 +14,7 @@ type LaunchSpec struct {
 	Jar           JarInfo
 	WorkingDir    string
 	DataDirectory string
+	NeedsGraphics bool
 	Args          []string
 	Command       *exec.Cmd
 }
@@ -50,6 +51,15 @@ func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
 	jvmArgs, _ := normalizeDataDirectoryArg(cfg.JVMArgs, cfg.DataDirectory, configVersion)
 	args := append([]string{}, jvmArgs...)
 	adapter := effectiveAdapter(cfg, jar)
+	if requiredModules := adapter.RequiredJavaModules(jar.MainClass); len(requiredModules) > 0 {
+		modules, moduleErr := probeJavaModules(javaPath)
+		if moduleErr != nil {
+			return LaunchSpec{}, fmt.Errorf("检查 Java 模块: %w", moduleErr)
+		}
+		if missing := missingJavaModules(modules, requiredModules); len(missing) > 0 {
+			return LaunchSpec{}, fmt.Errorf("Java 运行时缺少游戏必需模块：%s；请换用完整的 JRE/JDK", strings.Join(missing, ", "))
+		}
+	}
 	dataDirectory := resolveDataDirectory(cfg, cfgPath)
 	dataProperty := adapter.DataDirectoryProperty()
 	if dataDirectory != "" && dataProperty != "" {
@@ -81,14 +91,15 @@ func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
 	if err != nil || !info.IsDir() {
 		return LaunchSpec{}, fmt.Errorf("工作目录不可用: %s", workingDir)
 	}
-	cmd := javaCommand(javaPath, args, workingDir)
+	needsGraphics := adapter.NeedsGraphics(jar.MainClass)
+	cmd := javaCommand(javaPath, args, workingDir, needsGraphics)
 	cmd.Dir = workingDir
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return LaunchSpec{
 		Java: java,
-		Jar:  jar, WorkingDir: workingDir, DataDirectory: dataDirectory,
+		Jar:  jar, WorkingDir: workingDir, DataDirectory: dataDirectory, NeedsGraphics: needsGraphics,
 		Args: args, Command: cmd,
 	}, nil
 }
@@ -111,8 +122,8 @@ func formatCommand(spec LaunchSpec) string {
 	return strings.Join(parts, " ")
 }
 
-func javaCommand(javaPath string, args []string, workingDir string) *exec.Cmd {
-	if shouldLaunchOnFlatpakHost() {
+func javaCommand(javaPath string, args []string, workingDir string, needsGraphics bool) *exec.Cmd {
+	if needsGraphics && shouldLaunchOnFlatpakHost() {
 		if spawn, err := exec.LookPath("flatpak-spawn"); err == nil {
 			spawnArgs := []string{"--host", "--watch-bus", "--directory=" + workingDir, javaPath}
 			spawnArgs = append(spawnArgs, args...)

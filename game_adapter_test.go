@@ -10,6 +10,15 @@ func TestAutoProfileRecognizesMindustry(t *testing.T) {
 	if adapter.DataDirectoryProperty() != "mindustry.data.dir" {
 		t.Fatalf("unexpected data directory property: %q", adapter.DataDirectoryProperty())
 	}
+	if modules := adapter.RequiredJavaModules("mindustry.desktop.DesktopLauncher"); len(modules) != 2 {
+		t.Fatalf("unexpected required modules: %#v", modules)
+	}
+	if !adapter.NeedsGraphics("mindustry.desktop.DesktopLauncher") {
+		t.Fatal("desktop launcher should require graphics")
+	}
+	if adapter.NeedsGraphics("mindustry.server.ServerLauncher") {
+		t.Fatal("server launcher should not require graphics")
+	}
 	jvm, game, err := adapter.LaunchArguments(AdapterLaunchContext{DataDirectory: "/games/data"})
 	if err != nil {
 		t.Fatal(err)

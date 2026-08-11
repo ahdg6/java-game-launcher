@@ -45,6 +45,8 @@ Game/
 
 游戏的 stdout/stderr 会实时显示在可滚动日志页中。方向键、`PgUp`/`PgDn`、`g`/`G` 可浏览日志，完整日志保存在配置目录的 `logs/` 中。
 
+启动失败后，日志页会在原始输出前展示智能诊断和修复建议。目前可识别 Java 版本/架构、缺失模块或类、无效 JVM 参数、内存不足、图形环境、权限和原生库问题；按 `D` 可切换诊断与原始日志。Mindustry 启动前还会确认完整运行时包含 `java.desktop` 和 `jdk.unsupported`。
+
 ## 游戏配置与特殊参数
 
 通用核心只负责 Java/JAR 发现、兼容性、进程、配置和日志。游戏特殊行为通过 [`GameAdapter`](./game_adapter.go) 隔离：
@@ -55,6 +57,8 @@ type GameAdapter interface {
     DisplayName() string
     Matches(mainClass string) bool
     DataDirectoryProperty() string
+    RequiredJavaModules(mainClass string) []string
+    NeedsGraphics(mainClass string) bool
     NativeArchitectures(files []*zip.File, goos string) []string
     LaunchArguments(context AdapterLaunchContext) (jvmArgs, gameArgs []string, err error)
 }
@@ -74,9 +78,15 @@ Mindustry 配置首次默认使用 JAR 旁的 `game_data`，自动创建并传�
 
 在 TUI 清空数据目录后不会添加该属性，Mindustry 将使用自身默认位置。相对数据目录始终以 JAR 所在目录为基准。
 
+### Mindustry 工具
+
+主菜单的 Mindustry 工具页可以打开数据、模组和备份目录，并创建安全 ZIP 备份。备份保留存档、设置、模组、地图和未知用户数据，排除可再生的 `cache`、`tmp`，且不会跟随符号链接。底层恢复服务会防止 Zip Slip，默认拒绝覆盖已有文件。
+
+模组管理页支持目录、JAR、ZIP 和 `.disabled`，会读取 `mod.json`、`plugin.json`、`mod.hjson` 中的名称、版本和作者。单项启停使用可逆重命名；批量禁用要求二次确认，并可在当前会话恢复。游戏运行期间禁止改变模组状态。
+
 ## 默认 JVM 参数
 
-默认值面向 Java 17+ 游戏的低停顿和帧时间稳定性：
+默认值面向 Java 17+ 游戏的低停顿和帧时间稳定性。新配置使用自动预设：物理内存少于 8 GiB 使用 1 GiB 堆、8–16 GiB 使用 2 GiB、16 GiB 以上使用 4 GiB。也可在 TUI 左右切换保守、均衡、性能预设；手动编辑参数后标记为自定义。
 
 ```text
 -Xms2g
@@ -90,7 +100,7 @@ Mindustry 配置首次默认使用 JAR 旁的 `game_data`，自动创建并传�
 -Dfile.encoding=UTF-8
 ```
 
-固定 2 GiB 堆可避免运行时扩堆，`AlwaysPreTouch` 将内存缺页成本提前到启动阶段。大型游戏或模组包可同时提高 `-Xms`、`-Xmx`，但不建议超过物理内存的一半。对于 Java 版本较旧或需求不同的游戏，应在 TUI 中调整或清空这些参数。
+固定大小堆可避免运行时扩堆，`AlwaysPreTouch` 将内存缺页成本提前到启动阶段。大型游戏或模组包可提高预设，但不建议超过物理内存的一半。对于 Java 版本较旧或需求不同的游戏，应在 TUI 中调整或清空这些参数。
 
 ## 命令行模式
 
@@ -108,12 +118,13 @@ java-game-launcher --config ./custom.json
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "game_profile": "auto",
   "java_path": "openjdk-21/bin/java.exe",
   "jar_path": "MindustryX-Desktop.jar",
   "working_directory": "",
   "data_directory": "game_data",
+  "jvm_preset": "auto",
   "jvm_args": ["-Xms2g", "-Xmx2g", "-XX:+UseG1GC"],
   "game_args": []
 }

@@ -26,35 +26,52 @@ const (
 	editGameArgs
 )
 
-const menuItemCount = 12
+const menuItemCount = 13
 
 type environmentMsg struct{ env Environment }
 
 type model struct {
-	cfg           Config
-	cfgPath       string
-	env           Environment
-	cursor        int
-	width         int
-	height        int
-	loading       bool
-	dirty         bool
-	status        string
-	statusErr     bool
-	mode          editMode
-	input         textinput.Model
-	area          textarea.Model
-	logView       viewport.Model
-	showLog       bool
-	launching     bool
-	logText       string
-	logPath       string
-	launchErr     error
-	activeSession *launchSession
-	picking       bool
-	pickerTarget  editMode
-	pickerLabel   string
-	picker        filepicker.Model
+	cfg               Config
+	cfgPath           string
+	env               Environment
+	cursor            int
+	width             int
+	height            int
+	loading           bool
+	dirty             bool
+	status            string
+	statusErr         bool
+	mode              editMode
+	input             textinput.Model
+	area              textarea.Model
+	logView           viewport.Model
+	memory            MemoryInfo
+	showLog           bool
+	launching         bool
+	logText           string
+	logPath           string
+	launchErr         error
+	diagnostics       []Diagnostic
+	showAnalysis      bool
+	activeSession     *launchSession
+	showTools         bool
+	toolsCursor       int
+	toolBusy          bool
+	toolStatus        string
+	toolStatusErr     bool
+	backupCount       int
+	lastBackup        BackupResult
+	showMods          bool
+	mods              []MindustryMod
+	modsCursor        int
+	modsStatus        string
+	modsStatusErr     bool
+	confirmDisableAll bool
+	modDisablePlan    MindustryModDisablePlan
+	picking           bool
+	pickerTarget      editMode
+	pickerLabel       string
+	picker            filepicker.Model
 }
 
 var (
@@ -77,10 +94,11 @@ func newModel(cfg Config, cfgPath, initialStatus string, statusErr bool) model {
 	area.SetWidth(76)
 	area.SetHeight(12)
 	logView := viewport.New(80, 18)
+	memory := DetectMemory()
 	return model{
 		cfg: cfg, cfgPath: cfgPath, loading: true,
 		status: initialStatus, statusErr: statusErr,
-		input: input, area: area, logView: logView,
+		input: input, area: area, logView: logView, memory: memory,
 	}
 }
 
@@ -144,8 +162,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logText = normalizeLog(msg.output)
 		m.logPath = msg.logPath
 		m.launchErr = msg.err
-		m.logView.SetContent(m.logText)
-		m.logView.GotoBottom()
+		m.diagnostics = AnalyzeLaunchFailure(msg.output, msg.err)
+		m.showAnalysis = len(m.diagnostics) > 0
+		m.logView.SetContent(m.logDisplayContent())
+		if m.showAnalysis {
+			m.logView.GotoTop()
+		} else {
+			m.logView.GotoBottom()
+		}
 		if msg.err != nil {
 			m.setStatus(fmt.Sprintf("启动失败（%.1fs）：%s", msg.duration.Seconds(), msg.err), true)
 		} else {
@@ -156,6 +180,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if m.showLog {
 		return m.updateLogView(msg)
+	}
+	if m.showMods {
+		return m.updateMods(msg)
+	}
+	if m.showTools {
+		return m.updateTools(msg)
 	}
 	if m.picking {
 		return m.updatePicker(msg)
@@ -183,6 +213,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cycleJar(-1)
 		} else if m.cursor == 3 {
 			return m.cycleProfile(-1)
+		} else if m.cursor == 7 {
+			m.cycleJVMPreset(-1)
 		}
 	case "right", "l":
 		if m.cursor == 1 {
@@ -191,16 +223,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cycleJar(1)
 		} else if m.cursor == 3 {
 			return m.cycleProfile(1)
+		} else if m.cursor == 7 {
+			m.cycleJVMPreset(1)
 		}
 	case "r":
 		return m.startRefresh()
 	case "s":
 		m.save()
 	case "d":
-		if m.cursor == 6 {
-			m.cfg.JVMArgs = defaultJVMArgs()
+		if m.cursor == 7 {
+			preset := ResolveJVMPreset(presetAuto, m.memory)
+			m.cfg.JVMPreset = preset.ID
+			m.cfg.JVMArgs = preset.Args
 			m.dirty = true
-			m.setStatus("已恢复低停顿帧率优化参数", false)
+			m.setStatus("已恢复自动 JVM 预设："+preset.Description, false)
 		}
 	case "enter", " ":
 		return m.activate()
@@ -267,6 +303,8 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		m.launching = true
 		m.showLog = true
 		m.launchErr = nil
+		m.diagnostics = nil
+		m.showAnalysis = false
 		m.logPath = session.writer.logPath()
 		m.logText = ""
 		m.logView.SetContent("")
@@ -286,22 +324,29 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		}
 		return m, m.beginPathPicker(editDataDir, "选择 "+effectiveAdapterForModel(m).DisplayName()+" 数据目录")
 	case 6:
-		m.beginArgsEditor(editJVMArgs, "编辑 JVM 参数", m.cfg.JVMArgs)
+		if effectiveAdapterForModel(m).ID() != profileMindustry {
+			m.setStatus("Mindustry 工具仅在识别或选择 Mindustry 配置后可用", true)
+			return m, nil
+		}
+		m.showTools = true
+		m.refreshBackupCount()
 	case 7:
-		m.beginArgsEditor(editGameArgs, "编辑游戏参数", m.cfg.GameArgs)
+		m.beginArgsEditor(editJVMArgs, "编辑 JVM 参数", m.cfg.JVMArgs)
 	case 8:
+		m.beginArgsEditor(editGameArgs, "编辑游戏参数", m.cfg.GameArgs)
+	case 9:
 		if m.logText == "" {
 			m.setStatus("还没有可查看的启动日志", true)
 			return m, nil
 		}
 		m.showLog = true
-		m.logView.SetContent(m.logText)
+		m.logView.SetContent(m.logDisplayContent())
 		m.logView.GotoBottom()
-	case 9:
-		return m.startRefresh()
 	case 10:
-		m.save()
+		return m.startRefresh()
 	case 11:
+		m.save()
+	case 12:
 		return m, tea.Quit
 	}
 	return m, nil
@@ -506,6 +551,7 @@ func (m *model) commitArgsEditor() {
 	args := argsFromLines(m.area.Value())
 	if m.mode == editJVMArgs {
 		m.cfg.JVMArgs = args
+		m.cfg.JVMPreset = presetCustom
 	} else {
 		m.cfg.GameArgs = args
 	}
@@ -598,6 +644,30 @@ func (m *model) cycleProfile(delta int) (tea.Model, tea.Cmd) {
 	return *m, discoverCmd(m.cfg, m.cfgPath)
 }
 
+func (m *model) cycleJVMPreset(delta int) {
+	presets := AvailableJVMPresets(m.memory)
+	current := m.cfg.JVMPreset
+	index := 0
+	found := false
+	for i, preset := range presets {
+		if preset.ID == current {
+			index = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		index = 0
+	} else {
+		index = (index + delta + len(presets)) % len(presets)
+	}
+	preset := presets[index]
+	m.cfg.JVMPreset = preset.ID
+	m.cfg.JVMArgs = preset.Args
+	m.dirty = true
+	m.setStatus("已选择 "+preset.Name+"："+preset.Description, false)
+}
+
 func (m *model) save() {
 	if err := saveConfig(m.cfgPath, m.cfg); err != nil {
 		m.setStatus(err.Error(), true)
@@ -614,6 +684,12 @@ func (m *model) setStatus(status string, isError bool) {
 func (m model) View() string {
 	if m.showLog {
 		return m.logViewPage()
+	}
+	if m.showMods {
+		return m.modsView()
+	}
+	if m.showTools {
+		return m.toolsView()
 	}
 	if m.mode != editNone {
 		return m.editorView()
@@ -636,7 +712,8 @@ func (m model) View() string {
 		{"游戏配置", profileDisplayForModel(m)},
 		{"工作目录", displayDefault(m.cfg.WorkingDirectory, "自动：JAR 所在目录")},
 		{"数据目录", dataDirectoryDisplay(m, m.width-28)},
-		{"JVM 参数（低停顿）", fmt.Sprintf("%d 项", len(m.cfg.JVMArgs))},
+		{"Mindustry 工具", "备份 · 模组目录 · 数据目录"},
+		{"JVM 参数", fmt.Sprintf("%s · %d 项", jvmPresetDisplay(m.cfg, m.memory), len(m.cfg.JVMArgs))},
 		{"游戏参数", fmt.Sprintf("%d 项", len(m.cfg.GameArgs))},
 		{"查看上次日志", logFileName(m.logPath)},
 		{"重新检测", ""},
@@ -713,6 +790,13 @@ func (m model) updateLogView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "G", "end":
 			m.logView.GotoBottom()
 			return m, nil
+		case "d":
+			if len(m.diagnostics) > 0 {
+				m.showAnalysis = !m.showAnalysis
+				m.logView.SetContent(m.logDisplayContent())
+				m.logView.GotoTop()
+			}
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd
@@ -726,7 +810,7 @@ func (m *model) appendLog(text string) {
 		m.logText = "[启动器] TUI 仅保留最后 4 MiB；完整内容请查看日志文件。\n\n" +
 			m.logText[len(m.logText)-maxCapturedLogBytes:]
 	}
-	m.logView.SetContent(m.logText)
+	m.logView.SetContent(m.logDisplayContent())
 	m.logView.GotoBottom()
 }
 
@@ -748,10 +832,14 @@ func (m model) logViewPage() string {
 		path = "日志文件不可写，仅保留当前 TUI 内容"
 	}
 	percent := int(m.logView.ScrollPercent() * 100)
-	return titleStyle.Render(title) + "  " + state + "\n" +
+	diagnosticStatus := ""
+	if len(m.diagnostics) > 0 {
+		diagnosticStatus = fmt.Sprintf(" · %d 条诊断", len(m.diagnostics))
+	}
+	return titleStyle.Render(title) + "  " + state + diagnosticStatus + "\n" +
 		dimStyle.Render("文件: "+shortPath(path, m.width-8)) + "\n\n" +
 		m.logView.View() + "\n" +
-		dimStyle.Render(fmt.Sprintf("↑/↓ 或 PgUp/PgDn 滚动  g 顶部  G 底部  Esc 返回  %d%%", percent))
+		dimStyle.Render(fmt.Sprintf("↑/↓/PgUp/PgDn 滚动  g/G 顶部/底部  D 切换诊断  Esc 返回  %d%%", percent))
 }
 
 func (m model) editorView() string {
@@ -910,4 +998,11 @@ func logFileName(path string) string {
 		return "暂无"
 	}
 	return filepath.Base(path)
+}
+
+func jvmPresetDisplay(cfg Config, memory MemoryInfo) string {
+	if cfg.JVMPreset == "" || cfg.JVMPreset == presetCustom {
+		return "自定义"
+	}
+	return ResolveJVMPreset(cfg.JVMPreset, memory).Name
 }

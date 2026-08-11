@@ -20,6 +20,8 @@ type GameAdapter interface {
 	DisplayName() string
 	Matches(mainClass string) bool
 	DataDirectoryProperty() string
+	RequiredJavaModules(mainClass string) []string
+	NeedsGraphics(mainClass string) bool
 	NativeArchitectures(files []*zip.File, goos string) []string
 	LaunchArguments(context AdapterLaunchContext) (jvmArgs, gameArgs []string, err error)
 }
@@ -37,6 +39,8 @@ func (genericAdapter) ID() string                                       { return
 func (genericAdapter) DisplayName() string                              { return "通用 Java 游戏" }
 func (genericAdapter) Matches(string) bool                              { return false }
 func (genericAdapter) DataDirectoryProperty() string                    { return "" }
+func (genericAdapter) RequiredJavaModules(string) []string              { return nil }
+func (genericAdapter) NeedsGraphics(string) bool                        { return true }
 func (genericAdapter) NativeArchitectures([]*zip.File, string) []string { return nil }
 func (genericAdapter) LaunchArguments(AdapterLaunchContext) ([]string, []string, error) {
 	return nil, nil, nil
@@ -50,6 +54,12 @@ func (mindustryAdapter) Matches(mainClass string) bool {
 	return strings.HasPrefix(mainClass, "mindustry.")
 }
 func (mindustryAdapter) DataDirectoryProperty() string { return "mindustry.data.dir" }
+func (mindustryAdapter) RequiredJavaModules(string) []string {
+	return []string{"java.desktop", "jdk.unsupported"}
+}
+func (mindustryAdapter) NeedsGraphics(mainClass string) bool {
+	return !strings.Contains(mainClass, ".server.") && !strings.HasSuffix(mainClass, "ServerLauncher")
+}
 func (mindustryAdapter) NativeArchitectures(files []*zip.File, goos string) []string {
 	return arcNativeArchitectures(files, goos)
 }

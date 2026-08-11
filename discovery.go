@@ -266,6 +266,40 @@ func parseJavaProperties(output string) map[string]string {
 	return properties
 }
 
+func probeJavaModules(path string) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--list-modules").CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("模块检测超时")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("执行 java --list-modules: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return parseJavaModules(string(out)), nil
+}
+
+func parseJavaModules(output string) map[string]bool {
+	modules := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		name := strings.TrimSpace(strings.SplitN(line, "@", 2)[0])
+		if name != "" {
+			modules[name] = true
+		}
+	}
+	return modules
+}
+
+func missingJavaModules(available map[string]bool, required []string) []string {
+	missing := []string{}
+	for _, module := range required {
+		if !available[module] {
+			missing = append(missing, module)
+		}
+	}
+	return missing
+}
+
 func executableArchitecture(path string) (string, int) {
 	file, err := elf.Open(path)
 	if err != nil {

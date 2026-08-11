@@ -11,7 +11,9 @@ import (
 	"strings"
 )
 
-const configVersion = 4
+const configVersion = 5
+
+const presetCustom = "custom"
 
 const (
 	configFileName       = "java-game-launcher.json"
@@ -25,6 +27,7 @@ type Config struct {
 	JarPath          string   `json:"jar_path"`
 	WorkingDirectory string   `json:"working_directory,omitempty"`
 	DataDirectory    string   `json:"data_directory"`
+	JVMPreset        string   `json:"jvm_preset"`
 	JVMArgs          []string `json:"jvm_args"`
 	GameArgs         []string `json:"game_args"`
 }
@@ -34,7 +37,8 @@ func defaultConfig() Config {
 		Version:       configVersion,
 		GameProfile:   profileAuto,
 		DataDirectory: "game_data",
-		JVMArgs:       defaultJVMArgs(),
+		JVMPreset:     presetAuto,
+		JVMArgs:       ResolveJVMPreset(presetAuto, DetectMemory()).Args,
 		GameArgs:      []string{},
 	}
 }
@@ -85,6 +89,11 @@ func loadConfig(path string) (Config, error) {
 	if cfg.GameProfile == "" {
 		cfg.GameProfile = profileAuto
 	}
+	if loadedVersion < 5 {
+		cfg.JVMPreset = presetCustom
+	} else if cfg.JVMPreset == "" {
+		cfg.JVMPreset = presetAuto
+	}
 	if loadedVersion < 3 {
 		cfg.DataDirectory = "game_data"
 	}
@@ -100,6 +109,11 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg.GameArgs == nil {
 		cfg.GameArgs = []string{}
+	}
+	if cfg.JVMPreset != presetCustom {
+		preset := ResolveJVMPreset(cfg.JVMPreset, DetectMemory())
+		cfg.JVMPreset = preset.ID
+		cfg.JVMArgs = preset.Args
 	}
 	return cfg, nil
 }

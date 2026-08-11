@@ -85,3 +85,14 @@ func TestJavaArchitectureError(t *testing.T) {
 		t.Fatalf("64-bit Java was rejected: %v", err)
 	}
 }
+
+func TestParseAndCheckJavaModules(t *testing.T) {
+	modules := parseJavaModules("java.base@25\njava.desktop@25\njdk.unsupported@25\n")
+	if missing := missingJavaModules(modules, []string{"java.desktop", "jdk.unsupported"}); len(missing) != 0 {
+		t.Fatalf("unexpected missing modules: %#v", missing)
+	}
+	missing := missingJavaModules(modules, []string{"java.sql", "jdk.unsupported"})
+	if len(missing) != 1 || missing[0] != "java.sql" {
+		t.Fatalf("missingJavaModules = %#v", missing)
+	}
+}

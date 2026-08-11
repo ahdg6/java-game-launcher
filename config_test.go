@@ -137,3 +137,48 @@ func TestClearedDataDirectoryPersists(t *testing.T) {
 		t.Fatalf("cleared data directory reappeared as %q", loaded.DataDirectory)
 	}
 }
+
+func TestLegacyConfigKeepsCustomJVMArgs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "launcher.json")
+	legacy := `{
+  "version": 4,
+  "game_profile": "mindustry",
+  "java_path": "",
+  "jar_path": "Mindustry.jar",
+  "data_directory": "game_data",
+  "jvm_args": ["-Xms3g", "-Xmx3g", "-Dcustom=true"],
+  "game_args": []
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.JVMPreset != presetCustom {
+		t.Fatalf("migrated preset = %q, want custom", cfg.JVMPreset)
+	}
+	want := []string{"-Xms3g", "-Xmx3g", "-Dcustom=true"}
+	if !reflect.DeepEqual(cfg.JVMArgs, want) {
+		t.Fatalf("custom JVM args changed: got %#v want %#v", cfg.JVMArgs, want)
+	}
+}
+
+func TestPresetConfigRegeneratesPresetArgs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "launcher.json")
+	cfg := defaultConfig()
+	cfg.JVMPreset = presetConservative
+	cfg.JVMArgs = []string{"-Xmx99g"}
+	if err := saveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ResolveJVMPreset(presetConservative, DetectMemory()).Args
+	if !reflect.DeepEqual(loaded.JVMArgs, want) {
+		t.Fatalf("preset args = %#v, want %#v", loaded.JVMArgs, want)
+	}
+}
