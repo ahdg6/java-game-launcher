@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +78,158 @@ func TestNormalizeLogStripsTerminalControlSequencesForTUI(t *testing.T) {
 	raw := "\x1b[2J\x1b[31merror\x1b[0m\a\b\r\nnext\rline\x7f"
 	if got, want := normalizeLog(raw), "error\nnext\nline"; got != want {
 		t.Fatalf("normalizeLog = %q, want %q", got, want)
+	}
+}
+
+func TestAppendLogKeepsScrolledPositionAndFollowsBottom(t *testing.T) {
+	m := newModel(defaultLauncherConfig(), filepath.Join(t.TempDir(), configFileName), "", false)
+	m.loading = false
+	m.logView.Height = 4
+	m.logText = strings.Repeat("line\n", 20)
+	m.logView.SetContent(m.logText)
+	m.logView.GotoBottom()
+	m.logView.ScrollUp(3)
+	wantedOffset := m.logView.YOffset
+	m.appendLog("new while reading\n")
+	if m.logView.YOffset != wantedOffset {
+		t.Fatalf("scrolled offset changed from %d to %d", wantedOffset, m.logView.YOffset)
+	}
+	m.logView.GotoBottom()
+	m.appendLog("followed\n")
+	if !m.logView.AtBottom() {
+		t.Fatal("viewport stopped following while already at bottom")
+	}
+}
+
+func TestNoModRetryPreparationFailureRemainsInLogView(t *testing.T) {
+	root := t.TempDir()
+	m := newModel(defaultLauncherConfig(), filepath.Join(root, configFileName), "", false)
+	m.loading = false
+	m.cfg.GameProfile = profileMindustry
+	m.cfg.DataDirectory = "game_data"
+	m.cfg.JavaPath = "missing-java"
+	m.cfg.JarPath = "missing.jar"
+	m.launchErr = errors.New("previous launch failed")
+	m.showLog = true
+	m.activeSession = &launchSession{spec: LaunchSpec{
+		Jar:           JarInfo{MainClass: "mindustry.desktop.DesktopLauncher"},
+		NeedsGraphics: true,
+	}}
+	if !m.canRetryWithoutMindustryMods() {
+		t.Fatal("retry should be available")
+	}
+	updated, command := m.Update(keyRune('m'))
+	m = updated.(model)
+	if command != nil || !m.showLog || m.launchErr == nil || m.logPath == "" || !strings.Contains(m.logText, "启动前检查失败") {
+		t.Fatalf("retry failure state: log=%v err=%v path=%q text=%q", m.showLog, m.launchErr, m.logPath, m.logText)
+	}
+}
+
+func TestLaunchWriterCoalescesSignalsButKeepsContinuousTail(t *testing.T) {
+	events := make(chan struct{}, 1)
+	writer := &launchLogWriter{events: events}
+	for _, chunk := range []string{"\x1b[3", "1mred\x1b[0m ", "你"} {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(events); got != 1 {
+		t.Fatalf("pending event count = %d, want 1", got)
+	}
+	if got := normalizeLog(writer.output()); got != "red 你" {
+		t.Fatalf("coalesced continuous output = %q", got)
+	}
+}
+
+func TestLaunchWriterCloseIsIdempotentAndRejectsLaterWrites(t *testing.T) {
+	events := make(chan struct{}, 1)
+	writer := &launchLogWriter{events: events}
+	if _, err := writer.Write([]byte("before")); err != nil {
+		t.Fatal(err)
+	}
+	writer.close()
+	writer.close()
+	if written, err := writer.Write([]byte("after")); written != 0 || !errors.Is(err, errLaunchLogClosed) {
+		t.Fatalf("write after close = %d, %v", written, err)
+	}
+	if got := writer.output(); got != "before" {
+		t.Fatalf("closed output = %q", got)
+	}
+}
+
+func TestTUIIgnoresOutputFromPreviousLaunchSession(t *testing.T) {
+	m := newModel(defaultLauncherConfig(), filepath.Join(t.TempDir(), configFileName), "", false)
+	active := &launchSession{events: make(chan struct{}, 1), writer: &launchLogWriter{events: make(chan struct{}, 1)}}
+	stale := &launchSession{}
+	m.activeSession = active
+	m.launching = true
+	updated, command := m.Update(launchOutputMsg{session: stale, text: "stale"})
+	m = updated.(model)
+	if command != nil || strings.Contains(m.logText, "stale") {
+		t.Fatalf("stale output was accepted: text=%q command=%v", m.logText, command != nil)
+	}
+}
+
+func TestFailedMindustryDesktopOffersExplicitNoModRetry(t *testing.T) {
+	m := newModel(defaultLauncherConfig(), filepath.Join(t.TempDir(), configFileName), "", false)
+	m.loading = false
+	m.cfg.DataDirectory = "game_data"
+	m.launchErr = errors.New("exit status 1")
+	m.activeSession = &launchSession{spec: LaunchSpec{
+		Jar:           JarInfo{MainClass: "mindustry.desktop.DesktopLauncher"},
+		NeedsGraphics: true,
+	}}
+	if !m.canRetryWithoutMindustryMods() || !strings.Contains(m.logViewPage(), "M 仅本次无模组重试") {
+		t.Fatalf("desktop failure did not offer retry: %s", m.logViewPage())
+	}
+	m.activeSession.spec.InteractiveConsole = true
+	if m.canRetryWithoutMindustryMods() {
+		t.Fatal("server failure offered no-mod desktop retry")
+	}
+	m.activeSession.spec.InteractiveConsole = false
+	m.activeSession.spec.Jar.MainClass = "example.Game"
+	if m.canRetryWithoutMindustryMods() {
+		t.Fatal("generic game failure offered Mindustry retry")
+	}
+	m.activeSession.spec.Jar.MainClass = "mindustry.desktop.DesktopLauncher"
+	m.cfg.DataDirectory = ""
+	if m.canRetryWithoutMindustryMods() {
+		t.Fatal("unmanaged data directory offered no-mod retry")
+	}
+}
+
+func TestPreparationFailureIsPersistedAndShownInLogView(t *testing.T) {
+	configDirectory := t.TempDir()
+	m := newModel(defaultLauncherConfig(), filepath.Join(configDirectory, configFileName), "", false)
+	m.loading = false
+	m.cfg.JavaPath = ""
+	updated, command := m.startConfiguredGame()
+	m = updated.(model)
+	if command != nil || !m.showLog || m.launchErr == nil || len(m.diagnostics) == 0 {
+		t.Fatalf("preparation failure state: showLog=%v err=%v diagnostics=%#v", m.showLog, m.launchErr, m.diagnostics)
+	}
+	if m.logPath == "" || !strings.Contains(m.logText, "启动前检查失败") {
+		t.Fatalf("preparation failure log path=%q text=%q", m.logPath, m.logText)
+	}
+	if _, err := os.Stat(m.logPath); err != nil {
+		t.Fatalf("persistent preparation log: %v", err)
+	}
+	logs, err := listLaunchLogs(m.cfgPath, defaultInstanceID)
+	if err != nil || len(logs) != 1 || logs[0].Path != m.logPath {
+		t.Fatalf("history logs=%#v err=%v", logs, err)
+	}
+}
+
+func TestSafeModePreparationFailureUsesPersistentLogView(t *testing.T) {
+	configDirectory := t.TempDir()
+	m := newModel(defaultLauncherConfig(), filepath.Join(configDirectory, configFileName), "", false)
+	m.loading = false
+	m.showTools = true
+	m.cfg.JavaPath = ""
+	updated, command := m.startMindustrySafeMode(filepath.Join(configDirectory, "game_data"))
+	m = updated.(model)
+	if command != nil || m.showTools || !m.showLog || m.logPath == "" || m.launchErr == nil {
+		t.Fatalf("safe mode preparation failure: tools=%v log=%v path=%q err=%v", m.showTools, m.showLog, m.logPath, m.launchErr)
 	}
 }
 

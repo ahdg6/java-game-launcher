@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,10 +20,9 @@ const (
 
 var instanceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// LauncherConfig is the v6 on-disk configuration. Instances are a slice so
+// LauncherConfig is the only on-disk configuration. Instances are a slice so
 // their order is stable in the TUI and in source control.
 type LauncherConfig struct {
-	Version          int              `json:"version"`
 	ActiveInstanceID string           `json:"active_instance_id"`
 	Instances        []InstanceConfig `json:"instances"`
 
@@ -30,8 +31,8 @@ type LauncherConfig struct {
 }
 
 // InstanceConfig contains everything needed to launch one executable Java
-// game. Paths retain their existing v5 bases: Java/JAR/working directory are
-// relative to the config, while data_directory is relative to the JAR.
+// game. Java/JAR/working directory paths are relative to the config, while
+// data_directory is relative to the JAR.
 type InstanceConfig struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
@@ -48,7 +49,6 @@ type InstanceConfig struct {
 func defaultLauncherConfig() LauncherConfig {
 	cfg := defaultConfig()
 	return LauncherConfig{
-		Version:          configVersion,
 		ActiveInstanceID: defaultInstanceID,
 		Instances: []InstanceConfig{
 			newInstanceConfig(defaultInstanceID, defaultInstanceName, cfg),
@@ -56,11 +56,10 @@ func defaultLauncherConfig() LauncherConfig {
 	}
 }
 
-// Config returns an independent compatibility view. Argument slices are
+// Config returns an independent launch view. Argument slices are
 // cloned so editing a view cannot mutate the stored instance accidentally.
 func (instance InstanceConfig) Config() Config {
 	return Config{
-		Version:          configVersion,
 		InstanceID:       instance.ID,
 		GameProfile:      instance.GameProfile,
 		JavaPath:         instance.JavaPath,
@@ -101,49 +100,25 @@ func loadLauncherConfig(path string) (LauncherConfig, error) {
 		return LauncherConfig{}, fmt.Errorf("读取配置: %w", err)
 	}
 
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(data, &root); err != nil {
-		return LauncherConfig{}, fmt.Errorf("解析配置 %s: %w", path, err)
-	}
-	var header struct {
-		Version int `json:"version"`
-	}
-	if err := json.Unmarshal(data, &header); err != nil {
-		return LauncherConfig{}, fmt.Errorf("解析配置 %s: %w", path, err)
-	}
-	_, hasInstances := root["instances"]
-	if header.Version > configVersion {
-		return LauncherConfig{}, fmt.Errorf("配置版本 %d 比启动器支持的版本 %d 更新", header.Version, configVersion)
-	}
-	if hasInstances && header.Version != configVersion {
-		return LauncherConfig{}, fmt.Errorf("配置包含 instances，但版本为 %d；拒绝按旧版单实例格式覆盖", header.Version)
-	}
-	if header.Version < configVersion || !hasInstances {
-		legacy, err := decodeLegacyConfig(data)
-		if err != nil {
-			return LauncherConfig{}, fmt.Errorf("解析旧配置 %s: %w", path, err)
-		}
-		return LauncherConfig{
-			Version:          configVersion,
-			ActiveInstanceID: defaultInstanceID,
-			Instances: []InstanceConfig{
-				newInstanceConfig(defaultInstanceID, defaultInstanceName, legacy),
-			},
-		}, nil
-	}
-
 	var launcher LauncherConfig
-	if err := json.Unmarshal(data, &launcher); err != nil {
-		return LauncherConfig{}, fmt.Errorf("解析配置 %s: %w", path, err)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&launcher); err != nil {
+		return LauncherConfig{}, fmt.Errorf("解析配置 %s: %w；配置尚未发布，直接删除此文件可重建", path, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("配置包含多个 JSON 值")
+		}
+		return LauncherConfig{}, fmt.Errorf("解析配置 %s: %w；配置尚未发布，直接删除此文件可重建", path, err)
 	}
 	if err := normalizeLauncherConfig(&launcher); err != nil {
-		return LauncherConfig{}, fmt.Errorf("校验配置 %s: %w", path, err)
+		return LauncherConfig{}, fmt.Errorf("校验配置 %s: %w；配置尚未发布，直接删除此文件可重建", path, err)
 	}
 	return launcher, nil
 }
 
 func normalizeLauncherConfig(launcher *LauncherConfig) error {
-	launcher.Version = configVersion
 	if len(launcher.Instances) == 0 {
 		return errors.New("至少需要一个实例")
 	}
@@ -162,6 +137,12 @@ func normalizeLauncherConfig(launcher *LauncherConfig) error {
 			launcher.Warnings = append(launcher.Warnings,
 				fmt.Sprintf("实例 %q 的名称为空，已临时使用其 ID", instance.ID))
 		}
+		if instance.GameProfile != "" && !slices.Contains(configuredProfileIDs(), instance.GameProfile) {
+			return fmt.Errorf("实例 %q 的游戏配置 %q 未知", instance.ID, instance.GameProfile)
+		}
+		if instance.JVMPreset != "" && !validJVMPresetID(instance.JVMPreset) {
+			return fmt.Errorf("实例 %q 的 JVM 预设 %q 未知", instance.ID, instance.JVMPreset)
+		}
 		normalizeInstanceConfig(instance)
 	}
 	if _, exists := seen[launcher.ActiveInstanceID]; !exists {
@@ -173,6 +154,15 @@ func normalizeLauncherConfig(launcher *LauncherConfig) error {
 	return nil
 }
 
+func validJVMPresetID(id string) bool {
+	switch id {
+	case presetAuto, presetConservative, presetBalanced, presetPerformance, presetCustom:
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeInstanceConfig(instance *InstanceConfig) {
 	if instance.GameProfile == "" {
 		instance.GameProfile = profileAuto
@@ -181,7 +171,7 @@ func normalizeInstanceConfig(instance *InstanceConfig) {
 		instance.JVMPreset = presetAuto
 	}
 	// nil means the field was absent. An explicit [] is an intentional request
-	// for no JVM arguments and must survive a v6 round trip.
+	// for no JVM arguments and must survive a round trip.
 	if instance.JVMPreset == presetCustom {
 		if instance.JVMArgs == nil {
 			instance.JVMArgs = defaultConfig().JVMArgs
@@ -193,9 +183,7 @@ func normalizeInstanceConfig(instance *InstanceConfig) {
 			instance.JVMArgs = preset.Args
 		}
 	}
-	instance.JVMArgs, instance.DataDirectory = normalizeDataDirectoryArg(
-		instance.JVMArgs, instance.DataDirectory, configVersion,
-	)
+	instance.JVMArgs = removeManagedDataDirectoryArgs(instance.JVMArgs)
 	if instance.GameArgs == nil {
 		instance.GameArgs = []string{}
 	}
@@ -214,45 +202,8 @@ func saveLauncherConfig(path string, launcher LauncherConfig) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("创建配置目录: %w", err)
 	}
-	if err := backupLegacyConfig(path); err != nil {
-		return err
-	}
 	if err := atomicWriteConfig(path, data, 0o644); err != nil {
 		return fmt.Errorf("保存配置: %w", err)
-	}
-	return nil
-}
-
-func backupLegacyConfig(path string) error {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("读取待迁移配置: %w", err)
-	}
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(data, &root); err != nil {
-		// The caller already loaded/validated the config in normal flows. Avoid
-		// claiming malformed data is a migratable v5 document.
-		return nil
-	}
-	var version int
-	if raw := root["version"]; raw != nil {
-		_ = json.Unmarshal(raw, &version)
-	}
-	_, hasInstances := root["instances"]
-	if version >= configVersion && hasInstances {
-		return nil
-	}
-	backupPath := path + ".v5.bak"
-	if _, err := os.Stat(backupPath); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("检查迁移备份: %w", err)
-	}
-	if err := atomicWriteConfig(backupPath, data, 0o644); err != nil {
-		return fmt.Errorf("保存迁移备份 %s: %w", backupPath, err)
 	}
 	return nil
 }

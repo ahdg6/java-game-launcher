@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -226,6 +227,23 @@ func AnalyzeLaunchFailure(output string, processErr error) []Diagnostic {
 		return severityRank(diagnostics[i].Severity) < severityRank(diagnostics[j].Severity)
 	})
 	return diagnostics
+}
+
+func AnalyzeStoredLaunchLog(output string) []Diagnostic {
+	lower := strings.ToLower(output)
+	failed := containsAny(lower,
+		"[启动器] 游戏进程异常结束:",
+		"[启动器] 启动前检查失败:",
+		"exception in thread",
+		"unsupportedclassversionerror",
+		"outofmemoryerror",
+		"could not create the java virtual machine",
+		"a fatal error has been detected by the java runtime environment",
+	)
+	if !failed {
+		return nil
+	}
+	return AnalyzeLaunchFailure(output, errors.New("历史日志记录了异常退出"))
 }
 
 func diagnoseClassVersion(original, lower string) (string, bool) {

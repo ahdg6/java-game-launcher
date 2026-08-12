@@ -137,6 +137,12 @@ func discoverJava(cfg Config, cfgPath string, roots []string) []JavaCandidate {
 			add(path, "启动器旁的 Java", 800-rootIndex*20-depth)
 		})
 	}
+	// Managed macOS JREs use <runtime>/Contents/Home/bin/java, one level deeper
+	// than the general nearby scan. Keep this narrowly scoped to runtimes/ so a
+	// cleared explicit path can still rediscover an installed Zulu runtime.
+	walkLocalJava(filepath.Join(configDir(cfgPath), "runtimes"), 5, func(path string, depth int) {
+		add(path, "启动器安装的 Java", 850-depth)
+	})
 	if home := os.Getenv("JAVA_HOME"); home != "" {
 		add(filepath.Join(home, "bin", name), "JAVA_HOME", 500)
 	}

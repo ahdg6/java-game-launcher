@@ -40,3 +40,29 @@ func TestRunCLIProcessPersistsOutputWithoutTakingOverStdin(t *testing.T) {
 		t.Fatalf("CLI log output = %q", text)
 	}
 }
+
+func TestSaveCLIAutoSelectionsDoesNotChangeConfiguredActiveInstance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), configFileName)
+	launcher := defaultLauncherConfig()
+	selected, err := launcher.CreateInstance("selected", "Selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := selected.Config()
+	cfg.JavaPath = "runtimes/zulu/bin/java"
+	cfg.JarPath = "Mindustry.jar"
+	if err := saveCLIAutoSelections(path, &launcher, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadLauncherConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ActiveInstanceID != defaultInstanceID {
+		t.Fatalf("CLI selection changed active instance to %q", loaded.ActiveInstanceID)
+	}
+	got := loaded.InstanceByID("selected")
+	if got == nil || got.JavaPath != cfg.JavaPath || got.JarPath != cfg.JarPath {
+		t.Fatalf("selected instance paths = %#v", got)
+	}
+}

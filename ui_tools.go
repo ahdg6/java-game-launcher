@@ -126,25 +126,25 @@ func (m model) startMindustrySafeMode(dataDir string) (tea.Model, tea.Cmd) {
 	}
 	m.syncActiveInstance()
 	if err := saveLauncherConfig(m.cfgPath, m.launcher); err != nil {
-		m.toolStatus, m.toolStatusErr = err.Error(), true
-		return m, nil
+		m.showTools = false
+		return m.showPrepareLaunchFailure(fmt.Errorf("保存无模组启动配置：%w", err))
 	}
 	m.dirty = false
-	spec, err := prepareLaunch(m.cfg, m.cfgPath)
+	spec, err := prepareLaunch(m.configForNextLaunch(), m.cfgPath)
 	if err != nil {
-		m.toolStatus, m.toolStatusErr = err.Error(), true
-		return m, nil
+		m.showTools = false
+		return m.showPrepareLaunchFailure(err)
 	}
 	stateDir := safeModeStateDirectory(m.cfgPath, m.cfg.InstanceID)
 	if recovered, err := recoverInstanceSafeMode(m.cfg, m.cfgPath); err != nil {
-		m.toolStatus, m.toolStatusErr = "恢复上次安全模式失败："+err.Error(), true
-		return m, nil
+		m.showTools = false
+		return m.showPrepareLaunchFailure(fmt.Errorf("恢复上次安全模式：%w", err))
 	} else if recovered {
 		m.toolStatus = "已先恢复上次中断的安全模式"
 	}
 	if err := BeginMindustrySafeMode(dataDir, stateDir); err != nil {
-		m.toolStatus, m.toolStatusErr = err.Error(), true
-		return m, nil
+		m.showTools = false
+		return m.showPrepareLaunchFailure(fmt.Errorf("准备无模组安全启动：%w", err))
 	}
 	m.safeModeActive = true
 	m.toolStatus, m.toolStatusErr = "本次启动已临时禁用全部模组；退出后会自动恢复", false

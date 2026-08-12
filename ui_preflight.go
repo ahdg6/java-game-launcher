@@ -22,7 +22,7 @@ func (m model) startPreflight() (tea.Model, tea.Cmd) {
 	m.showPreflight = true
 	m.preflightBusy = true
 	m.preflight = PreflightReport{}
-	cfg := m.cfg
+	cfg := m.configForNextLaunch()
 	configPath := m.cfgPath
 	return m, func() tea.Msg {
 		return preflightResultMsg{report: RunLaunchPreflight(cfg, configPath)}

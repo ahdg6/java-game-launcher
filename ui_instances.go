@@ -75,9 +75,14 @@ func (m model) selectInstanceAt(index int, keepManager bool) (tea.Model, tea.Cmd
 	m.loading = true
 	m.discoveryGeneration++
 	m.showLog = false
+	m.showHistory = false
+	m.historyLogs = nil
+	m.showZulu = false
+	m.zuluPackage = ZuluPackage{}
 	m.logText = ""
 	m.logPath = ""
 	m.launchErr = nil
+	m.historyLogFailed = false
 	m.launchCleanupErr = nil
 	m.diagnostics = nil
 	m.showAnalysis = false

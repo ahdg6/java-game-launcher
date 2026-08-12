@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/filepicker"
@@ -58,10 +59,23 @@ type model struct {
 	logView               viewport.Model
 	memory                MemoryInfo
 	showLog               bool
+	showHistory           bool
+	historyLogs           []LaunchLogInfo
+	historyCursor         int
+	historyStatus         string
+	historyStatusErr      bool
+	confirmDeleteLog      bool
+	showZulu              bool
+	zuluBusy              bool
+	zuluPackage           ZuluPackage
+	zuluStatus            string
+	zuluStatusErr         bool
+	confirmZuluInstall    bool
 	launching             bool
 	logText               string
 	logPath               string
 	launchErr             error
+	historyLogFailed      bool
 	launchCleanupErr      error
 	diagnostics           []Diagnostic
 	showAnalysis          bool
@@ -102,6 +116,7 @@ type model struct {
 	instancesCursor       int
 	instanceEditAction    string
 	confirmDeleteInstance bool
+	launchExtraArgs       []string
 }
 
 var (
@@ -113,7 +128,7 @@ var (
 	labelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
 )
 
-func newModel(launcher LauncherConfig, cfgPath, initialStatus string, statusErr bool) model {
+func newModel(launcher LauncherConfig, cfgPath, initialStatus string, statusErr bool, launchExtraArgs ...string) model {
 	active, err := launcher.Active()
 	if err != nil {
 		launcher = defaultLauncherConfig()
@@ -144,26 +159,42 @@ func newModel(launcher LauncherConfig, cfgPath, initialStatus string, statusErr 
 		discoveryGeneration: 1, instancesCursor: launcherInstanceIndex(launcher, cfg.InstanceID),
 		status: initialStatus, statusErr: statusErr,
 		input: input, serverInput: serverInput, area: area, logView: logView, memory: memory,
+		launchExtraArgs: slices.Clone(launchExtraArgs),
 	}
 	result.loadLatestInstanceLog()
 	return result
 }
 
 func (m *model) loadLatestInstanceLog() {
-	path, output, err := latestLaunchLog(m.cfgPath, m.cfg.InstanceID)
+	logs, err := listLaunchLogs(m.cfgPath, m.cfg.InstanceID)
 	if err != nil {
 		if m.status == "" {
 			m.setStatus(err.Error(), true)
 		}
 		return
 	}
-	if path == "" {
+	m.historyLogs = logs
+	if len(logs) == 0 {
 		return
 	}
-	m.logPath = path
+	output, err := readLaunchLogTail(logs[0].Path)
+	if err != nil {
+		if m.status == "" {
+			m.setStatus(err.Error(), true)
+		}
+		return
+	}
+	m.logPath = logs[0].Path
 	m.logText = normalizeLog(output)
-	m.logView.SetContent(m.logText)
-	m.logView.GotoBottom()
+	m.diagnostics = AnalyzeStoredLaunchLog(m.logText)
+	m.historyLogFailed = len(m.diagnostics) > 0
+	m.showAnalysis = m.historyLogFailed
+	m.logView.SetContent(m.logDisplayContent())
+	if m.showAnalysis {
+		m.logView.GotoTop()
+	} else {
+		m.logView.GotoBottom()
+	}
 }
 
 func (m model) Init() tea.Cmd {
@@ -224,12 +255,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case launchOutputMsg:
-		if !m.launching {
+		if !m.launching || msg.session != m.activeSession {
 			return m, nil
 		}
-		m.appendLog(msg.text)
+		m.replaceLiveLog(msg.text)
 		return m, waitLaunchOutput(m.activeSession)
 	case launchStreamClosedMsg:
+		if msg.session != m.activeSession {
+			return m, nil
+		}
 		return m, nil
 	case launchFinishedMsg:
 		wasServer := m.activeSession != nil && m.activeSession.spec.InteractiveConsole
@@ -250,6 +284,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logPath = msg.logPath
 		stopped := errors.Is(msg.err, ErrLaunchStopped)
 		m.launchErr = msg.err
+		m.historyLogFailed = false
 		m.launchCleanupErr = safeModeRestoreErr
 		if stopped {
 			m.launchErr = nil
@@ -278,6 +313,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatus(fmt.Sprintf("游戏已退出（运行 %.1fs）", msg.duration.Seconds()), false)
 		}
+		m.refreshHistory()
 		return m, nil
 	}
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" && m.launching {
@@ -288,6 +324,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if m.showLog {
 		return m.updateLogView(msg)
+	}
+	if m.showHistory {
+		return m.updateHistory(msg)
+	}
+	if m.showZulu {
+		return m.updateZulu(msg)
 	}
 	if m.showPreflight {
 		return m.updatePreflight(msg)
@@ -428,7 +470,10 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 	case 1:
 		return m.startConfiguredGame()
 	case 2:
-		return m, m.beginPathPicker(editJavaPath, "选择 Java 可执行文件")
+		m.showZulu = true
+		m.zuluStatus = "按 R 查询 Azul 官方最新 LTS，按 P 选择本地 Java"
+		m.zuluStatusErr = false
+		m.confirmZuluInstall = false
 	case 3:
 		return m, m.beginPathPicker(editJarPath, "选择可执行游戏 JAR")
 	case 4:
@@ -455,13 +500,8 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 	case 10:
 		return m.startPreflight()
 	case 11:
-		if m.logText == "" {
-			m.setStatus("还没有可查看的启动日志", true)
-			return m, nil
-		}
-		m.showLog = true
-		m.logView.SetContent(m.logDisplayContent())
-		m.logView.GotoBottom()
+		m.showHistory = true
+		m.refreshHistory()
 	case 12:
 		return m.startRefresh()
 	case 13:
@@ -499,12 +539,38 @@ func (m model) startConfiguredGame() (tea.Model, tea.Cmd) {
 	}
 	m.dirty = false
 	m.confirmQuit = false
-	spec, err := prepareLaunch(m.cfg, m.cfgPath)
+	spec, err := prepareLaunch(m.configForNextLaunch(), m.cfgPath)
 	if err != nil {
-		m.setStatus(err.Error(), true)
-		return m, nil
+		return m.showPrepareLaunchFailure(err)
 	}
 	return m.startLaunchSpec(spec)
+}
+
+func (m model) configForNextLaunch() Config {
+	cfg := m.cfg
+	cfg.JVMArgs = slices.Clone(m.cfg.JVMArgs)
+	cfg.GameArgs = append(slices.Clone(m.cfg.GameArgs), m.launchExtraArgs...)
+	return cfg
+}
+
+func (m model) showPrepareLaunchFailure(failure error) (tea.Model, tea.Cmd) {
+	path, output := persistLaunchPreparationFailure(m.cfgPath, m.cfg.InstanceID, failure)
+	m.activeSession = nil
+	m.launching = false
+	m.showHistory = false
+	m.showLog = true
+	m.logPath = path
+	m.logText = normalizeLog(output)
+	m.launchErr = failure
+	m.historyLogFailed = false
+	m.launchCleanupErr = nil
+	m.diagnostics = AnalyzeLaunchFailure(m.logText, failure)
+	m.showAnalysis = len(m.diagnostics) > 0
+	m.logView.SetContent(m.logDisplayContent())
+	m.logView.GotoTop()
+	m.refreshHistory()
+	m.setStatus("启动前检查失败："+failure.Error(), true)
+	return m, nil
 }
 
 func (m model) startLaunchSpec(spec LaunchSpec) (tea.Model, tea.Cmd) {
@@ -515,11 +581,13 @@ func (m model) startLaunchSpec(spec LaunchSpec) (tea.Model, tea.Cmd) {
 	m.consoleInput = false
 	m.serverStopPending = false
 	m.showLog = true
+	m.showHistory = false
 	m.showTools = false
 	m.showMods = false
 	m.showBackups = false
 	m.showPreflight = false
 	m.launchErr = nil
+	m.historyLogFailed = false
 	m.launchCleanupErr = nil
 	m.diagnostics = nil
 	m.showAnalysis = false
@@ -866,6 +934,12 @@ func (m model) View() string {
 	if m.showLog {
 		return m.logViewPage()
 	}
+	if m.showHistory {
+		return m.historyView()
+	}
+	if m.showZulu {
+		return m.zuluView()
+	}
 	if m.showPreflight {
 		return m.preflightView()
 	}
@@ -898,7 +972,7 @@ func (m model) View() string {
 	items := []struct{ label, value string }{
 		{"实例", activeInstanceDisplay(m.launcher)},
 		{"启动游戏", ""},
-		{"Java 路径", shortPath(m.cfg.JavaPath, m.width-28)},
+		{"Java 运行时", shortPath(m.cfg.JavaPath, m.width-28)},
 		{"游戏 JAR", shortPath(m.cfg.JarPath, m.width-28)},
 		{"游戏配置", profileDisplayForModel(m)},
 		{"工作目录", displayDefault(m.cfg.WorkingDirectory, "自动：JAR 所在目录")},
@@ -907,7 +981,7 @@ func (m model) View() string {
 		{"JVM 参数", fmt.Sprintf("%s · %d 项", jvmPresetDisplay(m.cfg, m.memory), len(m.cfg.JVMArgs))},
 		{"游戏参数", fmt.Sprintf("%d 项", len(m.cfg.GameArgs))},
 		{"启动前检查", "Java · 模块 · 参数 · 目录 · 图形会话"},
-		{"查看上次日志", logFileName(m.logPath)},
+		{"启动历史", historyMenuDisplay(m)},
 		{"重新检测", ""},
 		{"保存配置", ""},
 		{"退出", ""},
@@ -984,7 +1058,7 @@ func (m model) updateLogView(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err := m.activeSession.SendInput(command); err != nil {
 						m.setStatus("发送服务器命令失败："+err.Error(), true)
 					} else {
-						m.appendLog("[控制台] > " + command + "\n")
+						m.appendLiveLog("[控制台] > " + command + "\n")
 					}
 				}
 				m.serverInput.SetValue("")
@@ -1026,14 +1100,18 @@ func (m model) updateLogView(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.setStatus("请求服务器安全退出失败："+err.Error(), true)
 					} else {
 						m.serverStopPending = true
-						m.appendLog("\n[启动器] 已发送 exit，请等待服务器保存并退出；再次按 Ctrl+X 可强制终止。\n")
+						m.appendLiveLog("\n[启动器] 已发送 exit，请等待服务器保存并退出；再次按 Ctrl+X 可强制终止。\n")
 					}
 				} else if err := m.activeSession.Stop(); err != nil {
 					m.setStatus("强制停止服务器失败："+err.Error(), true)
 				} else {
-					m.appendLog("\n[启动器] 已强制终止服务器进程。\n")
+					m.appendLiveLog("\n[启动器] 已强制终止服务器进程。\n")
 				}
 				return m, nil
+			}
+		case "m":
+			if m.canRetryWithoutMindustryMods() {
+				return m.startMindustrySafeMode(resolveDataDirectory(m.cfg, m.cfgPath))
 			}
 		}
 	}
@@ -1043,13 +1121,44 @@ func (m model) updateLogView(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) appendLog(text string) {
+	follow := m.logView.AtBottom()
 	m.logText += normalizeLog(text)
 	if len(m.logText) > maxCapturedLogBytes {
+		tail := strings.ToValidUTF8(m.logText[len(m.logText)-maxCapturedLogBytes:], "")
 		m.logText = "[启动器] TUI 仅保留最后 4 MiB；完整内容请查看日志文件。\n\n" +
-			m.logText[len(m.logText)-maxCapturedLogBytes:]
+			tail
 	}
 	m.logView.SetContent(m.logDisplayContent())
-	m.logView.GotoBottom()
+	if follow {
+		m.logView.GotoBottom()
+	}
+}
+
+func (m *model) appendLiveLog(text string) {
+	if m.launching && m.activeSession != nil {
+		_, _ = m.activeSession.writer.Write([]byte(text))
+		m.replaceLiveLog(m.activeSession.writer.output())
+		return
+	}
+	m.appendLog(text)
+}
+
+func (m *model) replaceLiveLog(raw string) {
+	follow := m.logView.AtBottom()
+	m.logText = normalizeLog(raw)
+	m.logView.SetContent(m.logDisplayContent())
+	if follow {
+		m.logView.GotoBottom()
+	}
+}
+
+func (m model) canRetryWithoutMindustryMods() bool {
+	if m.loading || m.launching || m.launchErr == nil || m.activeSession == nil || strings.TrimSpace(m.cfg.DataDirectory) == "" {
+		return false
+	}
+	spec := m.activeSession.spec
+	adapter := effectiveAdapter(m.cfg, spec.Jar)
+	return adapter.ID() == profileMindustry && spec.NeedsGraphics && !spec.InteractiveConsole
 }
 
 func normalizeLog(text string) string {
@@ -1081,6 +1190,8 @@ func (m model) logViewPage() string {
 		state = errStyle.Render("退出后恢复失败：" + m.launchCleanupErr.Error())
 	} else if m.launchErr != nil {
 		state = errStyle.Render("启动失败：" + m.launchErr.Error())
+	} else if m.historyLogFailed {
+		state = errStyle.Render("历史启动失败")
 	}
 	path := m.logPath
 	if path == "" {
@@ -1093,6 +1204,9 @@ func (m model) logViewPage() string {
 	}
 	console := ""
 	footer := "↑/↓/PgUp/PgDn 滚动  g/G 顶部/底部  D 切换诊断  Esc 返回"
+	if m.canRetryWithoutMindustryMods() {
+		footer += "  M 仅本次无模组重试"
+	}
 	if m.launching && m.activeSession != nil && m.activeSession.spec.InteractiveConsole {
 		stopHelp := "Ctrl+X 安全停止"
 		if m.serverStopPending {

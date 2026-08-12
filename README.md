@@ -29,6 +29,8 @@ Game/
 3. `JAVA_HOME/bin/java(.exe)`；
 4. 系统 `PATH`。
 
+Java 运行时页也可以安装 Azul Zulu 最新 LTS JRE。进入页面本身不会联网：只有按 `R` 才访问 `api.azul.com` 查询元数据；按 `I` 两次明确确认后才从 `cdn.azul.com` 下载。启动器严格选择当前系统与架构的 LTS、PSU、GA、CA、TCK 认证、headfull、无 JavaFX/CRaC 的 JRE（Linux 仅 glibc），按官方 SHA-256 校验后安全解压到配置目录旁的 `runtimes/`。它不会覆盖或删除已有 Java，安装成功后只为当前实例选用新运行时。启动器绝不会自动下载 Java。
+
 启动器读取 JAR 的 `Main-Class` 及 class major version，从而确定最低 Java 版本。适配器还可以声明游戏自带的原生库架构；例如 Mindustry 配置会拒绝用 32 位 Java 加载只包含 64 位 Arc/SDL 库的 JAR。
 
 若启动器运行在 Flatpak 开发工具中，会自动通过 `flatpak-spawn --host` 进入宿主图形会话，避免 SDL/LWJGL 游戏无法访问显示设备。
@@ -45,7 +47,7 @@ Game/
 
 主菜单第一项是实例。可用 `←` / `→` 快速切换，或进入管理页后新建、克隆、重命名、二次确认删除及排序。实例 ID 自动生成且重命名后保持稳定；每个实例独立保存 Java、JAR、工作目录、数据目录和参数。克隆实例会自动改用独立的 `instances/<id>/game_data`，若高级用户让两个实例共用同一数据目录，TUI 会明确警告。
 
-游戏的 stdout/stderr 会实时显示在可滚动日志页中。方向键、`PgUp`/`PgDn`、`g`/`G` 可浏览日志，完整日志按实例保存在配置目录的 `logs/<instance-id>/` 中；启动器重开或切换实例时会自动载入该实例最新日志的尾部。TUI 展示层会剥离 ANSI/终端控制序列，避免游戏颜色码清屏或扰乱界面；文件仍保留原始输出。启动失败不会退出或清空 TUI，诊断、原始输出和持久日志路径都留在日志页。
+游戏的 stdout/stderr 会实时显示在可滚动日志页中。方向键、`PgUp`/`PgDn`、`g`/`G` 可浏览日志；向上阅读时新输出不会抢回底部，按 `G` 可恢复跟随。完整日志按实例保存在配置目录的 `logs/<instance-id>/` 中；启动历史页可以列出、重新打开并诊断旧日志，也可二次确认后删除单份日志。启动器重开或切换实例时仍会自动载入最新日志的尾部。TUI 展示层会剥离 ANSI/终端控制序列，避免游戏颜色码清屏或扰乱界面；文件仍保留原始输出。包括 Java/JAR 检查阶段在内的启动失败都不会退出或清空 TUI，诊断、原始错误和持久日志路径会留在日志页。Mindustry 桌面进程失败后可在日志页按 `M`，由用户明确发起一次无模组安全重试；退出后自动恢复模组。
 
 Mindustry Server JAR 会自动识别为无图形交互会话。日志页按 `I` 输入服务器命令；`Ctrl+X` 第一次发送 `exit` 让服务器保存并安全退出，再按一次才强制终止。游戏或服务器运行时，启动器会阻止切换实例和正常退出，避免日志、控制台或安全恢复状态绑定到错误实例。
 
@@ -127,15 +129,14 @@ java-game-launcher --launch -- -debug
 java-game-launcher --config ./custom.json
 ```
 
-`--launch` 保留终端 stdin/stdout/stderr（服务器仍可直接输入命令），同时也写入按实例隔离的持久日志；异常退出会在终端末尾打印同一套智能诊断与日志路径。命令行追加的 `-- 游戏参数` 只影响本次运行，不会写回实例配置。
+`--launch` 保留终端 stdin/stdout/stderr（服务器仍可直接输入命令），同时也写入按实例隔离的持久日志；异常退出会在终端末尾打印同一套智能诊断与日志路径。命令行追加的 `-- 游戏参数` 只影响这次进程；若进入 TUI，则作用于该次 TUI 会话发起的启动和预检，不会写回实例配置。`--instance` 也只选择本次命令，不改变 TUI 的活动实例。
 
 ## 配置格式
 
-默认配置文件为 `java-game-launcher.json`。若同目录只有旧版 `mindustry-launcher.json`，会自动读取并在保存时迁移。
+默认配置文件为 `java-game-launcher.json`。项目尚未发布，配置只有当前格式，不带版本号也不维护历史迁移；开发期间若旧配置无法读取，按错误提示删除配置文件即可重建。
 
 ```json
 {
-  "version": 6,
   "active_instance_id": "desktop",
   "instances": [
     {
@@ -146,7 +147,7 @@ java-game-launcher --config ./custom.json
       "jar_path": "MindustryX-Desktop.jar",
       "working_directory": "",
       "data_directory": "game_data",
-      "jvm_preset": "auto",
+      "jvm_preset": "custom",
       "jvm_args": ["-Xms2g", "-Xmx2g", "-XX:+UseG1GC"],
       "game_args": []
     },
@@ -158,15 +159,13 @@ java-game-launcher --config ./custom.json
       "jar_path": "server-release.jar",
       "working_directory": "server",
       "data_directory": "instances/server/game_data",
-      "jvm_preset": "auto",
+      "jvm_preset": "custom",
       "jvm_args": ["-Xms2g", "-Xmx2g", "-XX:+UseG1GC"],
       "game_args": []
     }
   ]
 }
 ```
-
-v1–v5 会在内存中无损迁移成一个 `default` 实例，加载本身不会改写文件。第一次保存 v6 时，同名旧配置会保留为 `.v5.bak`；旧的 `mindustry-launcher.json` 则原样保留并写入新的 `java-game-launcher.json`。配置替换在 Unix 上使用同步后的原子 rename，在 Windows 上使用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`。
 
 Java、JAR 和工作目录的相对路径按配置文件目录解析；数据目录相对 JAR 所在目录解析。通用配置不会使用专用数据目录字段。
 

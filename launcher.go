@@ -50,7 +50,7 @@ func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
 			return LaunchSpec{}, fmt.Errorf("第 %d 个参数包含无效的 NUL 字符", i+1)
 		}
 	}
-	jvmArgs, _ := normalizeDataDirectoryArg(cfg.JVMArgs, cfg.DataDirectory, configVersion)
+	jvmArgs := removeManagedDataDirectoryArgs(cfg.JVMArgs)
 	args := append([]string{}, jvmArgs...)
 	adapter := effectiveAdapter(cfg, jar)
 	if requiredModules := adapter.RequiredJavaModules(jar.MainClass); len(requiredModules) > 0 {

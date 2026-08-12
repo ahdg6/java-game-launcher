@@ -12,11 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var (
-	version = "dev"
-	commit  = "unknown"
-)
-
 func main() {
 	configPath := flag.String("config", defaultConfigPath(), "配置文件路径")
 	instanceSelector := flag.String("instance", "", "选择实例（优先匹配 ID，名称必须唯一）")
@@ -24,38 +19,17 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "检查并打印启动命令，但不执行")
 	diagnose := flag.Bool("diagnose", false, "打印 Java/JAR 检测结果")
 	preflight := flag.Bool("preflight", false, "执行完整启动前检查（含 JVM 参数试运行）")
-	showVersion := flag.Bool("version", false, "显示版本")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Mindustry-first Java 游戏启动器\n\n用法: %s [选项] [-- 游戏参数...]\n\n", filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	if *showVersion {
-		fmt.Printf("java-game-launcher %s (%s)\n", version, commit)
-		return
-	}
 	absConfigPath, err := filepath.Abs(*configPath)
 	if err == nil {
 		*configPath = absConfigPath
 	}
-	loadPath := *configPath
-	legacyLoaded := false
-	configExplicit := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "config" {
-			configExplicit = true
-		}
-	})
-	if !configExplicit {
-		if _, statErr := os.Stat(loadPath); os.IsNotExist(statErr) {
-			legacy := filepath.Join(filepath.Dir(loadPath), legacyConfigFileName)
-			if _, legacyErr := os.Stat(legacy); legacyErr == nil {
-				loadPath = legacy
-				legacyLoaded = true
-			}
-		}
-	}
-	launcherCfg, loadErr := loadLauncherConfig(loadPath)
+	launcherCfg, loadErr := loadLauncherConfig(*configPath)
+	cliMode := *launch || *dryRun || *diagnose || *preflight
 	cfg := defaultConfig()
 	loadWarnings := []string(nil)
 	recoveredSafeModes := []string(nil)
@@ -78,10 +52,11 @@ func main() {
 		if selected != nil {
 			cfg = selected.Config()
 			selectedName = selected.Name
-			launcherCfg.ActiveInstanceID = selected.ID
+			if !cliMode {
+				launcherCfg.ActiveInstanceID = selected.ID
+			}
 		}
 	}
-	cliMode := *launch || *dryRun || *diagnose || *preflight
 	if loadErr == nil {
 		if cliMode && selectionErr == nil {
 			var recovered bool
@@ -94,11 +69,8 @@ func main() {
 		}
 	}
 	if cliMode {
-		runCLI(cfg, *configPath, *launch, *dryRun, *diagnose, *preflight, errors.Join(loadErr, selectionErr, recoveryErr), flag.Args())
+		runCLI(cfg, &launcherCfg, *configPath, *launch, *dryRun, *diagnose, *preflight, errors.Join(loadErr, selectionErr, recoveryErr), flag.Args())
 		return
-	}
-	if len(flag.Args()) > 0 {
-		cfg.GameArgs = append(cfg.GameArgs, flag.Args()...)
 	}
 	if selected := launcherCfg.InstanceByID(cfg.InstanceID); selected != nil {
 		selected.ApplyConfig(cfg)
@@ -114,22 +86,20 @@ func main() {
 	} else if selectionErr != nil {
 		status = selectionErr.Error() + "；已回退到配置中的活动实例"
 		statusErr = true
-	} else if legacyLoaded {
-		status = "已读取旧版 Mindustry 配置；保存后将迁移为 " + configFileName
 	} else if len(loadWarnings) > 0 {
 		status = strings.Join(loadWarnings, "；")
 		statusErr = true
 	} else if len(recoveredSafeModes) > 0 {
 		status = "已恢复上次中断的安全模式模组：" + strings.Join(recoveredSafeModes, "、")
 	}
-	p := tea.NewProgram(newModel(launcherCfg, *configPath, status, statusErr), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(launcherCfg, *configPath, status, statusErr, flag.Args()...), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "启动 TUI 失败:", err)
 		os.Exit(1)
 	}
 }
 
-func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose, preflight bool, loadErr error, extraGameArgs []string) {
+func runCLI(cfg Config, launcher *LauncherConfig, cfgPath string, launch, dryRun, diagnose, preflight bool, loadErr error, extraGameArgs []string) {
 	if loadErr != nil {
 		fmt.Fprintln(os.Stderr, loadErr)
 		os.Exit(1)
@@ -143,7 +113,7 @@ func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose, preflight bool
 		}
 	}
 	if changed && launch {
-		if err := saveConfig(cfgPath, cfg); err != nil {
+		if err := saveCLIAutoSelections(cfgPath, launcher, cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -181,6 +151,17 @@ func runCLI(cfg Config, cfgPath string, launch, dryRun, diagnose, preflight bool
 			os.Exit(1)
 		}
 	}
+}
+
+func saveCLIAutoSelections(cfgPath string, launcher *LauncherConfig, cfg Config) error {
+	instance := launcher.InstanceByID(cfg.InstanceID)
+	if instance == nil {
+		return errors.New("保存自动选择：当前实例不存在")
+	}
+	// --instance selects one invocation. Persist newly discovered paths for that
+	// instance without silently changing the TUI's configured active instance.
+	instance.ApplyConfig(cfg)
+	return saveLauncherConfig(cfgPath, *launcher)
 }
 
 func runCLIProcess(spec LaunchSpec, cfgPath string) error {

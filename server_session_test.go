@@ -94,6 +94,12 @@ func TestLaunchSessionStopRunningProcess(t *testing.T) {
 	if !errors.Is(finished.err, ErrLaunchStopped) {
 		t.Fatalf("finished error = %v, want ErrLaunchStopped", finished.err)
 	}
+	if strings.Contains(finished.output, "异常结束") || !strings.Contains(finished.output, "由用户停止") {
+		t.Fatalf("stopped session log = %q", finished.output)
+	}
+	if diagnostics := AnalyzeStoredLaunchLog(normalizeLog(finished.output)); diagnostics != nil {
+		t.Fatalf("stopped session history diagnostics = %#v", diagnostics)
+	}
 	if err := session.SendInput("after-stop"); !errors.Is(err, ErrLaunchProcessExited) {
 		t.Fatalf("SendInput after stop = %v, want ErrLaunchProcessExited", err)
 	}

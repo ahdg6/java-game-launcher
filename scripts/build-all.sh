@@ -2,9 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${VERSION:-dev}
-COMMIT=${COMMIT:-unknown}
-LDFLAGS="-s -w -X main.version=$VERSION -X main.commit=$COMMIT"
+LDFLAGS="-s -w"
 
 mkdir -p "$ROOT/dist"
 
