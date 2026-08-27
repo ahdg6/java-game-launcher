@@ -5,5 +5,5 @@ New-Item -ItemType Directory -Force (Split-Path -Parent $Output) | Out-Null
 $env:CGO_ENABLED = "0"
 $env:GOOS = "windows"
 $env:GOARCH = "amd64"
-go build -trimpath -ldflags "-s -w" -o $Output $Root
+go build -trimpath -ldflags "-s -w" -o $Output (Join-Path $Root "cmd\java-game-launcher")
 Write-Host "Built $Output"

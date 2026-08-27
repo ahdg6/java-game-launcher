@@ -55,7 +55,7 @@ Mindustry Server JAR 会自动识别为无图形交互会话。日志页按 `I` 
 
 ## 游戏配置与特殊参数
 
-通用核心只负责 Java/JAR 发现、兼容性、进程、配置和日志。游戏特殊行为通过 [`GameAdapter`](./game_adapter.go) 隔离：
+通用核心只负责 Java/JAR 发现、兼容性、进程、配置和日志。游戏特殊行为通过 [`GameAdapter`](./internal/app/games.go) 隔离：
 
 ```go
 type GameAdapter interface {
@@ -175,7 +175,13 @@ Java、JAR 和工作目录的相对路径按配置文件目录解析；数据目
 
 ```sh
 go test ./...
-go build -trimpath -o java-game-launcher .
+go build -trimpath -o java-game-launcher ./cmd/java-game-launcher
+```
+
+提交前可运行统一检查入口（格式、`vet`、测试）：
+
+```sh
+./scripts/check.sh
 ```
 
 一次构建 Windows、Linux、macOS 的 amd64/arm64 版本：
@@ -192,3 +198,20 @@ Windows PowerShell：
 ```
 
 构建使用 `CGO_ENABLED=0`，不需要额外 DLL 或 C 编译器。游戏 JAR 与 JRE/JDK 不会打包进启动器。
+
+## 开发结构
+
+源码采用 Go 常见的 `cmd` / `internal` 布局，根目录只保留项目元数据和文档：
+
+```text
+cmd/java-game-launcher/  可执行文件入口
+internal/app/            CLI、TUI 与启动流程编排
+internal/diagnostics/    无界面依赖的启动失败诊断规则
+internal/java/           Java 探测、JVM 预设和 Zulu 运行时安装
+internal/mindustry/      备份、模组和安全启动领域逻辑
+internal/fsutil/         原子替换、归档路径校验等共享文件安全原语
+scripts/                 检查与跨平台构建入口
+dist/                    构建成品（不纳入版本控制）
+```
+
+文件名按职责命名，例如 `history_view.go`、`process.go`、`recovery.go`；包名负责表达上下文，不再依赖 `ui_xxx.go`、`server_xxx.go`、`safe_xxx.go` 前缀维持分类。这里没有机械照搬 MVC：Bubble Tea 状态机留在 `app` 内保持内聚，能独立测试的 Java、诊断和 Mindustry 能力才拆包。依赖方向和扩展约定见[架构说明](./docs/architecture.md)。

@@ -11,7 +11,7 @@ build() {
     goarch=$2
     output=$3
     printf 'building %s/%s -> %s\n' "$goos" "$goarch" "$output"
-    CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "$LDFLAGS" -o "$ROOT/dist/$output" "$ROOT"
+    CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "$LDFLAGS" -o "$ROOT/dist/$output" "$ROOT/cmd/java-game-launcher"
 }
 
 build windows amd64 java-game-launcher-windows-amd64.exe

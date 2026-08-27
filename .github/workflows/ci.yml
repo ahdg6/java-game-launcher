@@ -68,7 +68,7 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -ldflags "-s -w" -o "dist/${{ matrix.output }}" .
+        run: go build -trimpath -ldflags "-s -w" -o "dist/${{ matrix.output }}" ./cmd/java-game-launcher
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.output }}
