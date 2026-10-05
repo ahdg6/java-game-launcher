@@ -79,6 +79,8 @@ func (m model) updateZulu(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "p":
 		m.closePage(pageZulu, pageMain)
 		return m, m.beginPathPicker(editJavaPath, "选择 Java 可执行文件")
+	case "enter":
+		return m.startConfiguredGame()
 	case "r":
 		m.zuluBusy = true
 		m.zuluPackage = java.ZuluPackage{}
@@ -92,7 +94,7 @@ func (m model) updateZulu(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !m.confirmZuluInstall {
 			m.confirmZuluInstall = true
-			m.zuluStatus = "再次按 I 确认下载约 " + humanBytes(m.zuluPackage.Size) + " 并安装；不会替换或删除已有 Java"
+			m.zuluStatus = "再次按 I 确认下载（" + zuluPackageSizeLabel(m.zuluPackage.Size) + "）并安装；不会替换或删除已有 Java"
 			m.zuluStatusErr = true
 			return m, nil
 		}
@@ -130,14 +132,15 @@ func (m model) zuluView() string {
 		builder.WriteString(selectedStyle.Render("  [处理中]"))
 	}
 	builder.WriteString("\n\n")
-	builder.WriteString(labelStyle.Render("当前实例  ") + displayDefault(m.cfg.JavaPath, "自动发现") + "\n")
+	builder.WriteString(labelStyle.Render("当前实例  ") + activeInstanceDisplay(m.launcher) + "\n")
+	builder.WriteString(labelStyle.Render("Java 路径 ") + displayDefault(m.cfg.JavaPath, "自动发现") + "\n")
 	builder.WriteString(labelStyle.Render("安装位置  ") + filepath.Join(configDir(m.cfgPath), "runtimes") + "\n\n")
 	if m.zuluPackage.UUID == "" {
 		builder.WriteString(dimStyle.Render("没有联网查询。按 R 才会访问 api.azul.com，仅获取当前平台最新 LTS JRE 元数据。") + "\n")
 	} else {
 		builder.WriteString(labelStyle.Render("候选版本  ") + "Zulu JRE " + java.ZuluVersionLabel(m.zuluPackage.JavaVersion) + " LTS\n")
 		builder.WriteString(labelStyle.Render("官方包    ") + m.zuluPackage.Name + "\n")
-		builder.WriteString(labelStyle.Render("大小      ") + humanBytes(m.zuluPackage.Size) + "\n")
+		builder.WriteString(labelStyle.Render("预计大小  ") + zuluPackageSizeLabel(m.zuluPackage.Size) + "\n")
 		builder.WriteString(labelStyle.Render("SHA-256   ") + clampText(m.zuluPackage.SHA256, max(24, m.width-14)) + "\n")
 		builder.WriteString(labelStyle.Render("来源      ") + "api.azul.com 元数据 + cdn.azul.com 下载\n")
 	}
@@ -148,8 +151,15 @@ func (m model) zuluView() string {
 		}
 		builder.WriteString("\n" + style.Render(clampText(m.zuluStatus, max(30, m.width-2))) + "\n")
 	}
-	builder.WriteString("\n" + dimStyle.Render("R 只查询  I×2 下载并安装  P 选择本地 Java  Esc 返回"+zuluBusyHelp(m.zuluBusy)))
+	builder.WriteString("\n" + dimStyle.Render("Enter 启动游戏  R 只查询  I×2 下载并安装  P 选择本地 Java  Esc 返回"+zuluBusyHelp(m.zuluBusy)))
 	return builder.String()
+}
+
+func zuluPackageSizeLabel(size int64) string {
+	if size <= 0 {
+		return "大小未知，以实际下载为准"
+	}
+	return "约 " + humanBytes(size)
 }
 
 func zuluBusyHelp(busy bool) string {

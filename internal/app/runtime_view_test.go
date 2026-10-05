@@ -69,6 +69,30 @@ func TestZuluUIFailureDoesNotChangeJavaAndSuccessSelectsCurrentInstance(t *testi
 	}
 }
 
+func TestZuluPageOffersDirectLaunchAndTreatsSizeAsEstimate(t *testing.T) {
+	m := newModel(defaultLauncherConfig(), filepath.Join(t.TempDir(), configFileName), "", false)
+	m.page = pageZulu
+	m.loading = false
+	m.zuluPackage = java.ZuluPackage{UUID: "official", Size: 1024}
+	if view := m.zuluView(); !strings.Contains(view, "预计大小") || !strings.Contains(view, "约 ") || !strings.Contains(view, "Enter 启动游戏") {
+		t.Fatalf("missing quick launch or estimated size: %s", view)
+	}
+	m.zuluPackage.Size = 0
+	if !strings.Contains(m.zuluView(), "大小未知") {
+		t.Fatal("unknown size was displayed as a precise byte count")
+	}
+	m.zuluBusy = true
+	_, command := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command != nil {
+		t.Fatal("Enter launched while installing")
+	}
+	m.zuluBusy = false
+	updated, command := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil || updated.(model).preparing == nil || updated.(model).page != pageLog {
+		t.Fatal("Enter did not prepare a launch from the runtime page")
+	}
+}
+
 func keyRune(character rune) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}}
 }

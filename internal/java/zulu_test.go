@@ -2,11 +2,14 @@ package java
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -104,7 +107,7 @@ func TestInstallZuluPackageRejectsChecksumMismatchBeforeExtraction(t *testing.T)
 		_, _ = writer.Write([]byte("not an archive"))
 	}))
 	defer server.Close()
-	pkg := ZuluPackage{Name: "zulu-test.tar.gz", DownloadURL: "https://cdn.azul.com/zulu/bin/test", SHA256: strings.Repeat("0", 64), Size: int64(len("not an archive")), ArchiveType: "tar.gz"}
+	pkg := ZuluPackage{Name: "zulu-test.tar.gz", DownloadURL: "https://cdn.azul.com/zulu/bin/test", SHA256: strings.Repeat("0", 64), Size: 1, ArchiveType: "tar.gz"}
 	client := server.Client()
 	client.Transport = rewriteTransport{base: server.URL, next: client.Transport}
 	root := t.TempDir()
@@ -343,5 +346,77 @@ func TestExtractZuluTarRejectsWritesThroughEarlierSymlink(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(stage, "zulu", "b")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected write through symlink: %v", err)
+	}
+}
+
+func TestInstallZuluPackageAcceptsAdvisorySizeWithValidChecksum(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a shell Java executable")
+	}
+	archive := filepath.Join(t.TempDir(), "runtime.tar.gz")
+	writeZuluTarFixture(t, archive, map[string]string{
+		"zulu-test/bin/java": "#!/bin/sh\nprintf 'openjdk version \"25.0.4\"\\n'\n",
+	})
+	payload, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksum := sha256.Sum256(payload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Transport = rewriteTransport{base: server.URL, next: client.Transport}
+	for _, size := range []int64{int64(len(payload)) - 9, int64(len(payload)) + 9, 0, -1, maxZuluArchiveBytes + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			pkg := ZuluPackage{Name: "zulu-test.tar.gz", DownloadURL: "https://cdn.azul.com/zulu/bin/test", SHA256: hex.EncodeToString(checksum[:]), Size: size, ArchiveType: "tar.gz"}
+			result, err := InstallZuluPackage(context.Background(), client, pkg, t.TempDir())
+			if err != nil {
+				t.Fatalf("install with advisory size %d (actual %d): %v", size, len(payload), err)
+			}
+			if _, err := os.Stat(result.JavaPath); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCopyVerifiedZuluArchiveEnforcesActualSizeLimit(t *testing.T) {
+	const limit = 32
+	for _, size := range []int{limit, limit + 1, limit * 2} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			payload := bytes.Repeat([]byte("x"), size)
+			checksum := sha256.Sum256(payload)
+			source := bytes.NewReader(payload)
+			err := copyVerifiedZuluArchive(io.Discard, source, hex.EncodeToString(checksum[:]), limit)
+			if size <= limit {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "大小上限") {
+				t.Fatalf("expected hard size limit, got %v", err)
+			}
+			if consumed := size - source.Len(); consumed > limit+1 {
+				t.Fatalf("read %d bytes past bounded stream", consumed)
+			}
+		})
+	}
+}
+
+func TestInstallZuluPackageRejectsOversizedContentLength(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(maxZuluArchiveBytes+1))
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Transport = rewriteTransport{base: server.URL, next: client.Transport}
+	pkg := ZuluPackage{Name: "zulu-test.tar.gz", DownloadURL: "https://cdn.azul.com/zulu/bin/test", SHA256: strings.Repeat("0", 64), Size: 1, ArchiveType: "tar.gz"}
+	root := t.TempDir()
+	if _, err := InstallZuluPackage(context.Background(), client, pkg, root); err == nil || !strings.Contains(err.Error(), "下载大小异常") {
+		t.Fatalf("expected Content-Length rejection, got %v", err)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("download leftovers: %v, %v", entries, err)
 	}
 }

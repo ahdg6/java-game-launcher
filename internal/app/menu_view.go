@@ -42,10 +42,13 @@ func (m model) View() string {
 	}
 	b.WriteString("\n\n")
 	b.WriteString(m.summaryView())
+	if m.autoLaunchRemaining > 0 {
+		b.WriteString("\n\n" + selectedStyle.Render(fmt.Sprintf("%d 秒后自动启动 · 按任意键取消 · Enter 立即启动", m.autoLaunchRemaining)))
+	}
 	b.WriteString("\n\n")
 	items := []struct{ label, value string }{
-		{"实例", activeInstanceDisplay(m.launcher)},
 		{"启动游戏", ""},
+		{"实例", activeInstanceDisplay(m.launcher)},
 		{"Java 运行时", shortPath(m.cfg.JavaPath, m.width-28)},
 		{"游戏 JAR", shortPath(m.cfg.JarPath, m.width-28)},
 		{"游戏配置", profileDisplayForModel(m)},

@@ -40,6 +40,7 @@ type launchSession struct {
 	onStarted   func(pid int) error
 	beforeStart func() error
 	afterExit   func() error
+	onSuccess   func() error
 }
 
 type launchLogWriter struct {
@@ -311,6 +312,12 @@ func runLaunchSession(session *launchSession) tea.Cmd {
 			result.cleanupErr = session.afterExit()
 			if result.cleanupErr != nil {
 				_, _ = fmt.Fprintf(session.writer, "\n[启动器] 安全模式结束，但恢复模组失败：%v\n", result.cleanupErr)
+			}
+		}
+		successful := result.err == nil
+		if successful && result.cleanupErr == nil && session.onSuccess != nil {
+			if err := session.onSuccess(); err != nil {
+				_, _ = fmt.Fprintf(session.writer, "\n[启动器] 无法保存自动启动记录：%v\n", err)
 			}
 		}
 		result.output, result.logPath = session.writer.output(), session.writer.logPath()

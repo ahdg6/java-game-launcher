@@ -66,6 +66,13 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	if cliMode {
+		// A recovery failure is still a failed real launch attempt. Diagnostic
+		// invocations leave the operational success history untouched.
+		if recoveryErr != nil && options.launch && !options.dryRun {
+			if err := clearSuccessfulLaunch(options.configPath, cfg.InstanceID); err != nil {
+				fmt.Fprintln(stderr, "[启动器] 无法清除自动启动记录:", err)
+			}
+		}
 		if err := errors.Join(loadErr, selectionErr, recoveryErr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -96,7 +103,11 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	} else if len(recoveredSafeModes) > 0 {
 		status = "已恢复上次中断的安全模式模组：" + strings.Join(recoveredSafeModes, "、")
 	}
-	p := tea.NewProgram(newModel(launcherCfg, options.configPath, status, statusErr, options.gameArgs...), tea.WithAltScreen(), tea.WithInput(stdin), tea.WithOutput(stdout))
+	m := newModel(launcherCfg, options.configPath, status, statusErr, options.gameArgs...)
+	if options.noAutoLaunch {
+		m.cancelAutoLaunch()
+	}
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithInput(stdin), tea.WithOutput(stdout))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(stderr, "启动 TUI 失败:", err)
 		return 1

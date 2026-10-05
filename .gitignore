@@ -6,3 +6,4 @@
 /logs/
 *.tmp
 /.cache/
+/*.json.state/

@@ -56,6 +56,7 @@ func (m *model) closePage(current, parent page) {
 }
 
 type model struct {
+	autoLaunchState
 	toolsState
 	instancesState
 	preflightState
@@ -123,7 +124,8 @@ func newModel(launcher LauncherConfig, cfgPath, initialStatus string, statusErr 
 		discoveryGeneration: 1, instancesState: instancesState{instancesCursor: launcherInstanceIndex(launcher, cfg.InstanceID)},
 		status: initialStatus, statusErr: statusErr,
 		editorState: editorState{input: input, area: area}, logState: logState{serverInput: serverInput, logView: logView}, memory: memory,
-		launchState: launchState{launchExtraArgs: slices.Clone(launchExtraArgs)},
+		launchState:     launchState{launchExtraArgs: slices.Clone(launchExtraArgs)},
+		autoLaunchState: autoLaunchState{autoLaunchCancelled: statusErr},
 	}
 	result.loadLatestInstanceLog()
 	return result
@@ -144,7 +146,14 @@ func discoverCmd(cfg Config, cfgPath string, generation uint64) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Input before discovery finishes also suppresses this invocation's countdown.
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg:
+		m.cancelAutoLaunch()
+	}
 	switch msg := msg.(type) {
+	case autoLaunchTickMsg:
+		return m.updateAutoLaunch(msg)
 	case zuluMetadataMsg, zuluInstallMsg:
 		return m.updateZulu(msg)
 	case toolResultMsg:
@@ -193,7 +202,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if shared := m.sharedDataDirectoryNames(m.cfg.InstanceID); len(shared) > 0 && !m.statusErr {
 			m.setStatus("检测完成；警告：当前实例与 "+strings.Join(shared, "、")+" 共用数据目录", true)
 		}
-		return m, nil
+		command := m.armAutoLaunch()
+		return m, command
 	case launchOutputMsg:
 		if !m.launching || msg.session != m.activeSession {
 			return m, nil
@@ -271,7 +281,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.cursor = (m.cursor + 1) % menuItemCount
 	case "left", "h":
-		if m.cursor == 0 {
+		if m.cursor == 1 {
 			return m.switchInstanceBy(-1)
 		} else if m.cursor == 2 {
 			m.cycleJava(-1)
@@ -283,7 +293,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cycleJVMPreset(-1)
 		}
 	case "right", "l":
-		if m.cursor == 0 {
+		if m.cursor == 1 {
 			return m.switchInstanceBy(1)
 		} else if m.cursor == 2 {
 			m.cycleJava(1)
@@ -313,17 +323,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) activate() (tea.Model, tea.Cmd) {
-	if m.launching && m.cursor == 1 {
+	if m.launching && m.cursor == 0 {
 		m.setStatus("游戏进程仍在运行；可打开日志页面查看状态", true)
 		return m, nil
 	}
 	switch m.cursor {
 	case 0:
+		return m.startConfiguredGame()
+	case 1:
 		m.page = pageInstances
 		m.instancesCursor = launcherInstanceIndex(m.launcher, m.cfg.InstanceID)
 		m.confirmDeleteInstance = false
-	case 1:
-		return m.startConfiguredGame()
 	case 2:
 		m.page = pageZulu
 		m.zuluStatus = "按 R 查询 Azul 官方最新 LTS，按 P 选择本地 Java"

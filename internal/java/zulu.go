@@ -35,11 +35,12 @@ const (
 )
 
 type ZuluPackage struct {
-	UUID         string
-	Name         string
-	DownloadURL  string
-	SHA256       string
-	JavaVersion  []int
+	UUID        string
+	Name        string
+	DownloadURL string
+	SHA256      string
+	JavaVersion []int
+	// Size is an advisory value from Azul metadata; SHA256 verifies the archive.
 	Size         int64
 	ArchiveType  string
 	OS           string
@@ -185,8 +186,8 @@ func zuluClientForHost(client *http.Client, hostname string) *http.Client {
 }
 
 func validateZuluDetail(detail zuluPackageDetail, osName, architecture string, bitness int, archiveType string) error {
-	if detail.DownloadURL == "" || detail.Name == "" || len(detail.JavaVersion) == 0 || detail.Size <= 0 || detail.Size > maxZuluArchiveBytes {
-		return errors.New("Azul 元数据缺少下载地址、版本或合理文件大小")
+	if detail.DownloadURL == "" || detail.Name == "" || len(detail.JavaVersion) == 0 {
+		return errors.New("Azul 元数据缺少下载地址或版本")
 	}
 	download, err := url.Parse(detail.DownloadURL)
 	if err != nil || download.Scheme != "https" || !strings.EqualFold(download.Hostname(), "cdn.azul.com") {
@@ -300,16 +301,10 @@ func InstallZuluPackage(ctx context.Context, client *http.Client, pkg ZuluPackag
 	if response.ContentLength > maxZuluArchiveBytes {
 		return result, errors.New("Zulu JRE 下载大小异常")
 	}
-	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(archive, hash), io.LimitReader(response.Body, maxZuluArchiveBytes+1))
-	if err != nil {
-		return result, fmt.Errorf("写入 Zulu JRE：%w", err)
-	}
-	if written > maxZuluArchiveBytes || (pkg.Size > 0 && written != pkg.Size) {
-		return result, fmt.Errorf("Zulu JRE 下载大小不符：得到 %d，预期 %d", written, pkg.Size)
-	}
-	if got := hex.EncodeToString(hash.Sum(nil)); !strings.EqualFold(got, pkg.SHA256) {
-		return result, fmt.Errorf("Zulu JRE SHA-256 校验失败：得到 %s，预期 %s", got, pkg.SHA256)
+	// Metadata sizes can differ from the CDN payload. Enforce the actual byte limit and verify
+	// the complete payload against the official SHA-256 before extraction.
+	if err := copyVerifiedZuluArchive(archive, response.Body, pkg.SHA256, maxZuluArchiveBytes); err != nil {
+		return result, err
 	}
 	if err := archive.Sync(); err != nil {
 		return result, err
@@ -355,9 +350,28 @@ func InstallZuluPackage(ctx context.Context, client *http.Client, pkg ZuluPackag
 	return result, nil
 }
 
+func copyVerifiedZuluArchive(destination io.Writer, source io.Reader, expectedSHA256 string, limit int64) error {
+	hash := sha256.New()
+	written, err := io.Copy(io.MultiWriter(destination, hash), io.LimitReader(source, limit+1))
+	if err != nil {
+		return fmt.Errorf("写入 Zulu JRE：%w", err)
+	}
+	if written > limit {
+		return fmt.Errorf("Zulu JRE 下载超过大小上限：得到至少 %d 字节，上限 %d 字节", written, limit)
+	}
+	if got := hex.EncodeToString(hash.Sum(nil)); !strings.EqualFold(got, expectedSHA256) {
+		return fmt.Errorf("Zulu JRE SHA-256 校验失败：得到 %s，预期 %s", got, expectedSHA256)
+	}
+	return nil
+}
+
 func validateZuluPackageForInstall(pkg ZuluPackage) error {
-	if pkg.Name == "" || pkg.DownloadURL == "" || pkg.SHA256 == "" || pkg.Size <= 0 || pkg.Size > maxZuluArchiveBytes {
+	if pkg.Name == "" || pkg.DownloadURL == "" || pkg.SHA256 == "" {
 		return errors.New("Zulu 安装信息不完整")
+	}
+	checksum, err := hex.DecodeString(pkg.SHA256)
+	if err != nil || len(checksum) != sha256.Size {
+		return errors.New("Zulu 安装信息缺少有效 SHA-256")
 	}
 	download, err := url.Parse(pkg.DownloadURL)
 	if err != nil || download.Scheme != "https" || !strings.EqualFold(download.Hostname(), "cdn.azul.com") {

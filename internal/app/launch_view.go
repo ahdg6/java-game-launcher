@@ -24,11 +24,13 @@ type launchPreparation struct {
 }
 
 type launchPreparedMsg struct {
-	request     *launchPreparation
-	spec        LaunchSpec
-	saved       bool
-	safeDataDir string
-	err         error
+	request        *launchPreparation
+	spec           LaunchSpec
+	saved          bool
+	safeDataDir    string
+	err            error
+	historyWarning error
+	recordSuccess  bool
 }
 
 func (m model) startConfiguredGame() (tea.Model, tea.Cmd) {
@@ -36,10 +38,15 @@ func (m model) startConfiguredGame() (tea.Model, tea.Cmd) {
 }
 
 func (m model) startLaunchPreparation(safeDataDir string) (tea.Model, tea.Cmd) {
+	return m.startLaunchPreparationFor(safeDataDir, false)
+}
+
+func (m model) startLaunchPreparationFor(safeDataDir string, automatic bool) (tea.Model, tea.Cmd) {
 	if m.loading || m.launching || m.operationBusy() {
 		m.setStatus("正在检测、准备启动或运行，请稍候", true)
 		return m, nil
 	}
+	m.cancelAutoLaunch()
 	m.syncActiveInstance()
 	request := &launchPreparation{instanceID: m.cfg.InstanceID}
 	m.preparing = request
@@ -49,6 +56,13 @@ func (m model) startLaunchPreparation(safeDataDir string) (tea.Model, tea.Cmd) {
 	cfg, configPath, launcher := m.configForNextLaunch(), m.cfgPath, m.launcher.clone()
 	return m, func() tea.Msg {
 		result := launchPreparedMsg{request: request, safeDataDir: safeDataDir}
+		result.historyWarning = clearSuccessfulLaunch(configPath, cfg.InstanceID)
+		if result.historyWarning != nil && automatic {
+			result.err = result.historyWarning
+			return result
+		}
+		result.recordSuccess = result.historyWarning == nil && safeDataDir == ""
+
 		if _, err := recoverInstance(cfg, configPath); err != nil {
 			result.err = fmt.Errorf("启动前无法完成安全模式恢复：%w", err)
 			return result
@@ -74,7 +88,15 @@ func (m model) acceptLaunchPreparation(msg launchPreparedMsg) (tea.Model, tea.Cm
 	if msg.err != nil {
 		return m.showPrepareLaunchFailure(msg.err)
 	}
-	return m.startLaunchSpecWithSafeMode(msg.spec, msg.safeDataDir)
+	started, command := m.startLaunchSpecWithSafeMode(msg.spec, msg.safeDataDir)
+	m = started.(model)
+	if !msg.recordSuccess {
+		m.activeSession.onSuccess = nil
+	}
+	if msg.historyWarning != nil {
+		_, _ = fmt.Fprintf(m.activeSession.writer, "[启动器] 无法更新自动启动记录，本次不记录成功：%v\n", msg.historyWarning)
+	}
+	return m, command
 }
 
 func (m model) configForNextLaunch() Config {
@@ -110,7 +132,10 @@ func (m model) startLaunchSpec(spec LaunchSpec) (tea.Model, tea.Cmd) {
 func (m model) startLaunchSpecWithSafeMode(spec LaunchSpec, safeDataDir string) (tea.Model, tea.Cmd) {
 	m.setStatus("正在启动: "+formatCommand(spec), false)
 	session := newLaunchSession(spec, m.cfgPath)
-	if safeDataDir != "" {
+	if safeDataDir == "" {
+		cfg, path := m.configForNextLaunch(), m.cfgPath
+		session.onSuccess = func() error { return recordSuccessfulLaunch(path, cfg) }
+	} else {
 		stateDir := recoveryStateDirectory(m.cfgPath, m.cfg.InstanceID)
 		session.beforeStart = func() error { return mindustry.BeginSafeMode(safeDataDir, stateDir) }
 		session.onStarted = func(pid int) error { return mindustry.BindSafeModeProcess(safeDataDir, stateDir, pid) }

@@ -29,7 +29,7 @@ Game/
 3. `JAVA_HOME/bin/java(.exe)`；
 4. 系统 `PATH`。
 
-Java 运行时页也可以安装 Azul Zulu 最新 LTS JRE。进入页面本身不会联网：只有按 `R` 才访问 `api.azul.com` 查询元数据；按 `I` 两次明确确认后才从 `cdn.azul.com` 下载。启动器严格选择当前系统与架构的 LTS、PSU、GA、CA、TCK 认证、headfull、无 JavaFX/CRaC 的 JRE（Linux 仅 glibc），按官方 SHA-256 校验后安全解压到配置目录旁的 `runtimes/`。它不会覆盖或删除已有 Java，安装成功后只为当前实例选用新运行时。启动器绝不会自动下载 Java。
+Java 运行时页也可以安装 Azul Zulu 最新 LTS JRE。进入页面本身不会联网：只有按 `R` 才访问 `api.azul.com` 查询元数据；按 `I` 两次明确确认后才从 `cdn.azul.com` 下载。启动器严格选择当前系统与架构的 LTS、PSU、GA、CA、TCK 认证、headfull、无 JavaFX/CRaC 的 JRE（Linux 仅 glibc），按官方 SHA-256 校验后安全解压到配置目录旁的 `runtimes/`。元数据中的文件大小仅作估计，不要求与下载字节数完全相等；实际下载仍受 512 MiB 上限约束，哈希不匹配绝不会解压安装。它不会覆盖或删除已有 Java，安装成功后只为当前实例选用新运行时，检测完成后可直接按 `Enter` 启动游戏。启动器绝不会自动下载 Java。
 
 启动器读取 JAR 的 `Main-Class` 及 class major version，从而确定最低 Java 版本。适配器还可以声明游戏自带的原生库架构；例如 Mindustry 配置会拒绝用 32 位 Java 加载只包含 64 位 Arc/SDL 库的 JAR。
 
@@ -45,7 +45,11 @@ Java 运行时页也可以安装 Azul Zulu 最新 LTS JRE。进入页面本身�
 - `D`：选中 JVM 参数时恢复低停顿默认值；
 - `S` 保存，`R` 重新检测，`Q` 退出。
 
-主菜单第一项是实例。可用 `←` / `→` 快速切换，或进入管理页后新建、克隆、重命名、二次确认删除及排序。实例 ID 自动生成且重命名后保持稳定；每个实例独立保存 Java、JAR、工作目录、数据目录和参数。克隆实例会自动改用独立的 `instances/<id>/game_data`，若高级用户让两个实例共用同一数据目录，TUI 会明确警告。
+主菜单第一项是“启动游戏”，默认选中，按 `Enter` 即可启动。第二项是实例，在这一项上可用 `←` / `→` 快速切换，或进入管理页后新建、克隆、重命名、二次确认删除及排序。实例 ID 自动生成且重命名后保持稳定；每个实例独立保存 Java、JAR、工作目录、数据目录和参数。克隆实例会自动改用独立的 `instances/<id>/game_data`，若高级用户让两个实例共用同一数据目录，TUI 会明确警告。
+
+当前实例成功完成一次普通启动后，下次打开 TUI，初始本地检测完成且启动配置仍与成功记录一致时，会显示 **3 秒自动启动倒计时**。任意按键均取消本次自动启动；在检测期间操作过也不会再开启倒计时。默认选中的“启动游戏”仍可用 `Enter` 立即启动。启动失败不会自动重试，下次也需先手动成功启动；无模组安全启动不会建立普通启动的成功记录。
+
+使用 `--no-auto-launch` 可直接进入界面而不倒计时。`--launch` 仍立即启动，`--dry-run`、`--diagnose`、`--preflight` 不受倒计时影响。成功记录保存在 `<配置文件路径>.state/launch-history/<实例ID>.json`，独立于游戏配置和日志；更改启动参数、切换到没有对应成功记录的实例或删除记录都会阻止自动启动。更新前的日志不会被当作成功记录，更新后需先正常运行并退出一次。
 
 游戏的 stdout/stderr 会实时显示在可滚动日志页中。方向键、`PgUp`/`PgDn`、`g`/`G` 可浏览日志；向上阅读时新输出不会抢回底部，按 `G` 可恢复跟随。完整日志按实例保存在配置目录的 `logs/<instance-id>/` 中；启动历史页可以列出、重新打开并诊断旧日志，也可二次确认后删除单份日志。启动器重开或切换实例时仍会自动载入最新日志的尾部。TUI 展示层会剥离 ANSI/终端控制序列，避免游戏颜色码清屏或扰乱界面；文件仍保留原始输出。包括 Java/JAR 检查阶段在内的启动失败都不会退出或清空 TUI，诊断、原始错误和持久日志路径会留在日志页。Mindustry 桌面进程失败后可在日志页按 `M`，由用户明确发起一次无模组安全重试；退出后自动恢复模组。
 
@@ -121,6 +125,7 @@ Mindustry 配置首次默认使用 JAR 旁的 `game_data`，自动创建并传�
 
 ```sh
 java-game-launcher --launch
+java-game-launcher --no-auto-launch
 java-game-launcher --dry-run
 java-game-launcher --diagnose
 java-game-launcher --preflight

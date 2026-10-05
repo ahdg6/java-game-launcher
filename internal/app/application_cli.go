@@ -15,6 +15,7 @@ type cliOptions struct {
 	instance                            string
 	launch, dryRun, diagnose, preflight bool
 	gameArgs                            []string
+	noAutoLaunch                        bool
 }
 
 func parseCLIOptions(args []string, output io.Writer) (cliOptions, error) {
@@ -23,6 +24,7 @@ func parseCLIOptions(args []string, output io.Writer) (cliOptions, error) {
 	flags.SetOutput(output)
 	flags.StringVar(&options.configPath, "config", defaultConfigPath(), "配置文件路径")
 	flags.StringVar(&options.instance, "instance", "", "选择实例（优先匹配 ID，名称必须唯一）")
+	flags.BoolVar(&options.noAutoLaunch, "no-auto-launch", false, "本次进入 TUI 时不倒计时自动启动")
 	flags.BoolVar(&options.launch, "launch", false, "不进入 TUI，直接启动游戏")
 	flags.BoolVar(&options.dryRun, "dry-run", false, "检查并打印启动命令，但不执行")
 	flags.BoolVar(&options.diagnose, "diagnose", false, "打印 Java/JAR 检测结果")
@@ -39,6 +41,13 @@ func parseCLIOptions(args []string, output io.Writer) (cliOptions, error) {
 
 func runCLI(cfg Config, launcher *LauncherConfig, options cliOptions, stdin io.Reader, stdout, stderr io.Writer) error {
 	cfgPath := options.configPath
+	recordSuccess := true
+	if options.launch && !options.dryRun {
+		if err := clearSuccessfulLaunch(cfgPath, cfg.InstanceID); err != nil {
+			recordSuccess = false
+			fmt.Fprintln(stderr, "[启动器] 无法更新自动启动记录，本次不记录成功:", err)
+		}
+	}
 	env := discoverEnvironment(cfg, cfgPath)
 	changed := applyAutoSelections(&cfg, cfgPath, env)
 	if options.diagnose {
@@ -82,6 +91,11 @@ func runCLI(cfg Config, launcher *LauncherConfig, options cliOptions, stdin io.R
 		}
 		if err := runCLIProcess(spec, cfgPath, stdin, stdout, stderr); err != nil {
 			return fmt.Errorf("游戏进程异常结束: %w", err)
+		}
+		if recordSuccess {
+			if err := recordSuccessfulLaunch(cfgPath, cfg); err != nil {
+				fmt.Fprintln(stderr, "[启动器] 无法保存自动启动记录:", err)
+			}
 		}
 	}
 	return nil
