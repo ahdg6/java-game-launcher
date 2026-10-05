@@ -11,6 +11,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type instancesState struct {
+	instancesCursor       int
+	instanceEditAction    string
+	confirmDeleteInstance bool
+}
+
 const (
 	instanceEditNew    = "new"
 	instanceEditClone  = "clone"
@@ -58,7 +64,7 @@ func (m model) switchInstanceBy(delta int) (tea.Model, tea.Cmd) {
 }
 
 func (m model) selectInstanceAt(index int, keepManager bool) (tea.Model, tea.Cmd) {
-	if m.launching {
+	if m.launching || m.operationBusy() {
 		m.setStatus("游戏或服务器运行时不能切换实例", true)
 		return m, nil
 	}
@@ -71,15 +77,15 @@ func (m model) selectInstanceAt(index int, keepManager bool) (tea.Model, tea.Cmd
 	m.launcher.ActiveInstanceID = target.ID
 	m.cfg = target.Config()
 	m.instancesCursor = index
-	m.showInstances = keepManager
+	m.page = pageMain
+	if keepManager {
+		m.page = pageInstances
+	}
 	m.confirmDeleteInstance = false
 	m.env = Environment{}
 	m.loading = true
 	m.discoveryGeneration++
-	m.showLog = false
-	m.showHistory = false
 	m.historyLogs = nil
-	m.showZulu = false
 	m.zuluPackage = java.ZuluPackage{}
 	m.logText = ""
 	m.logPath = ""
@@ -88,7 +94,6 @@ func (m model) selectInstanceAt(index int, keepManager bool) (tea.Model, tea.Cmd
 	m.launchCleanupErr = nil
 	m.diagnostics = nil
 	m.showAnalysis = false
-	m.showPreflight = false
 	m.preflight = PreflightReport{}
 	m.activeSession = nil
 	m.mods = nil
@@ -119,11 +124,18 @@ func (m model) updateInstances(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	if m.launching {
+		switch key.String() {
+		case "n", "c", "r", "d", "J", "K", "enter", " ":
+			m.setStatus("游戏或服务器运行时不能修改实例", true)
+			return m, nil
+		}
+	}
 	switch key.String() {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q":
-		m.showInstances = false
+		m.closePage(pageInstances, pageMain)
 		m.confirmDeleteInstance = false
 		return m, nil
 	case "up", "k":

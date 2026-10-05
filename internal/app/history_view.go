@@ -8,6 +8,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type historyState struct {
+	historyLogs      []LaunchLogInfo
+	historyCursor    int
+	historyStatus    string
+	historyStatusErr bool
+	confirmDeleteLog bool
+}
+
 func (m *model) refreshHistory() {
 	logs, err := listLaunchLogs(m.cfgPath, m.cfg.InstanceID)
 	if err != nil {
@@ -36,7 +44,7 @@ func (m model) updateHistory(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q":
-		m.showHistory = false
+		m.closePage(pageHistory, pageMain)
 		m.confirmDeleteLog = false
 		return m, nil
 	case "up", "k":
@@ -110,8 +118,8 @@ func (m model) openSelectedHistoryLog() (tea.Model, tea.Cmd) {
 	m.historyLogFailed = len(m.diagnostics) > 0
 	m.showAnalysis = len(m.diagnostics) > 0
 	m.activeSession = nil
-	m.showHistory = false
-	m.showLog = true
+	m.closePage(pageHistory, pageMain)
+	m.page = pageLog
 	m.logView.SetContent(m.logDisplayContent())
 	if m.showAnalysis {
 		m.logView.GotoTop()

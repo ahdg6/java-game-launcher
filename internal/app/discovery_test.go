@@ -2,10 +2,15 @@ package app
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ahdg6/java-game-launcher/internal/java"
 )
@@ -96,5 +101,59 @@ func TestParseAndCheckJavaModules(t *testing.T) {
 	missing := java.MissingModules(modules, []string{"java.sql", "jdk.unsupported"})
 	if len(missing) != 1 || missing[0] != "java.sql" {
 		t.Fatalf("missingJavaModules = %#v", missing)
+	}
+}
+
+func TestManifestValueUsesMainSectionAndCaseInsensitiveNames(t *testing.T) {
+	manifest := []byte("Manifest-Version: 1.0\r\nmAiN-cLaSs: game.Main\r\n\r\nName: other.class\r\nMain-Class: other.Main\r\n")
+	if got := manifestValue(manifest, "Main-Class"); got != "game.Main" {
+		t.Fatalf("main section attribute = %q", got)
+	}
+	if got := manifestValue([]byte("Manifest-Version: 1.0\n\nName: other.class\nMain-Class: other.Main\n"), "Main-Class"); got != "" {
+		t.Fatalf("named section leaked into main attributes: %q", got)
+	}
+}
+
+func TestProbeJavaCandidatesBoundsConcurrencyAndPreservesRanking(t *testing.T) {
+	raw := make([]rawJavaCandidate, 20)
+	for i := range raw {
+		raw[i] = rawJavaCandidate{path: fmt.Sprint(i), source: "test", rank: i}
+	}
+	var running, peak atomic.Int32
+	probe := func(ctx context.Context, path string) (JavaCandidate, error) {
+		active := running.Add(1)
+		defer running.Add(-1)
+		for old := peak.Load(); active > old; old = peak.Load() {
+			if peak.CompareAndSwap(old, active) {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+		return JavaCandidate{Version: 21}, nil
+	}
+	results := probeJavaCandidates(context.Background(), raw, probe)
+	if peak.Load() > javaProbeConcurrency || peak.Load() == 0 {
+		t.Fatalf("peak concurrent probes = %d", peak.Load())
+	}
+	for i, candidate := range results {
+		want := raw[len(raw)-1-i]
+		if candidate.Path != want.path || candidate.Source != want.source || candidate.rank != want.rank || candidate.Err != nil {
+			t.Fatalf("result %d = %+v, want %+v", i, candidate, want)
+		}
+	}
+}
+
+func TestProbeJavaCandidatesSkipsCanceledWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	raw := []rawJavaCandidate{{path: "first"}, {path: "second"}}
+	results := probeJavaCandidates(ctx, raw, func(context.Context, string) (JavaCandidate, error) {
+		t.Error("probe invoked after cancellation")
+		return JavaCandidate{}, nil
+	})
+	for _, result := range results {
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("candidate error = %v, want canceled", result.Err)
+		}
 	}
 }

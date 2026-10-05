@@ -7,6 +7,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type preflightState struct {
+	preflightBusy bool
+	preflight     PreflightReport
+}
+
 type preflightResultMsg struct{ report PreflightReport }
 
 func (m model) startPreflight() (tea.Model, tea.Cmd) {
@@ -14,12 +19,12 @@ func (m model) startPreflight() (tea.Model, tea.Cmd) {
 		m.setStatus("仍在检测 Java，请稍候", true)
 		return m, nil
 	}
-	if m.launching {
+	if m.launching || m.preparing != nil {
 		m.setStatus("游戏或服务器已经在运行", true)
 		return m, nil
 	}
 	m.syncActiveInstance()
-	m.showPreflight = true
+	m.page = pagePreflight
 	m.preflightBusy = true
 	m.preflight = PreflightReport{}
 	cfg := m.configForNextLaunch()
@@ -54,7 +59,7 @@ func (m model) updatePreflight(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q":
-		m.showPreflight = false
+		m.closePage(pagePreflight, pageMain)
 		return m, nil
 	case "r":
 		return m.startPreflight()

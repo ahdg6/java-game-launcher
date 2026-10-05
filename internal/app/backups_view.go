@@ -10,6 +10,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type backupState struct {
+	backups              []mindustry.BackupInfo
+	backupsCursor        int
+	backupPreview        mindustry.BackupPreview
+	backupBusy           bool
+	backupStatus         string
+	backupStatusErr      bool
+	confirmRestoreBackup bool
+}
+
 type backupRestoreMsg struct {
 	restored mindustry.RestoreResult
 	safety   mindustry.BackupResult
@@ -61,7 +71,7 @@ func (m model) updateBackups(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q":
-		m.showBackups = false
+		m.closePage(pageBackups, pageTools)
 		m.confirmRestoreBackup = false
 		return m, nil
 	case "up", "k":

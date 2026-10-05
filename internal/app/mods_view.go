@@ -9,6 +9,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type modsState struct {
+	mods              []mindustry.Mod
+	modsCursor        int
+	modsStatus        string
+	modsStatusErr     bool
+	confirmDisableAll bool
+	modDisablePlan    mindustry.ModDisablePlan
+}
+
 func (m model) updateMods(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -18,7 +27,7 @@ func (m model) updateMods(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q":
-		m.showMods = false
+		m.closePage(pageMods, pageTools)
 		m.confirmDisableAll = false
 	case "up", "k":
 		if len(m.mods) > 0 {
@@ -57,6 +66,10 @@ func (m model) updateMods(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.confirmDisableAll = false
 	case "u":
+		if m.launching {
+			m.modsStatus, m.modsStatusErr = "游戏运行中不能修改模组状态", true
+			return m, nil
+		}
 		m.confirmDisableAll = false
 		if len(m.modDisablePlan.Changes) == 0 {
 			m.modsStatus, m.modsStatusErr = "当前会话没有可恢复的批量禁用操作", true

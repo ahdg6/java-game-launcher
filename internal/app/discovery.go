@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -49,9 +50,13 @@ type Environment struct {
 }
 
 func discoverEnvironment(cfg Config, cfgPath string) Environment {
+	return discoverEnvironmentContext(context.Background(), cfg, cfgPath)
+}
+
+func discoverEnvironmentContext(ctx context.Context, cfg Config, cfgPath string) Environment {
 	roots := discoveryRoots(cfgPath)
 	jars := discoverJars(cfg, cfgPath, roots)
-	java := discoverJava(cfg, cfgPath, roots)
+	java := discoverJavaContext(ctx, cfg, cfgPath, roots)
 	if jar, ok := selectJar(jars); ok {
 		for i := range java {
 			if java[i].Err == nil {
@@ -102,12 +107,17 @@ func javaExecutableName() string {
 	return "java"
 }
 
+type rawJavaCandidate struct {
+	path, source string
+	rank         int
+}
+
 func discoverJava(cfg Config, cfgPath string, roots []string) []JavaCandidate {
-	type rawCandidate struct {
-		path, source string
-		rank         int
-	}
-	raw := []rawCandidate{}
+	return discoverJavaContext(context.Background(), cfg, cfgPath, roots)
+}
+
+func discoverJavaContext(ctx context.Context, cfg Config, cfgPath string, roots []string) []JavaCandidate {
+	raw := []rawJavaCandidate{}
 	seen := map[string]bool{}
 	add := func(path, source string, rank int) {
 		if strings.TrimSpace(path) == "" {
@@ -122,7 +132,7 @@ func discoverJava(cfg Config, cfgPath string, roots []string) []JavaCandidate {
 			return
 		}
 		seen[key] = true
-		raw = append(raw, rawCandidate{path: filepath.Clean(path), source: source, rank: rank})
+		raw = append(raw, rawJavaCandidate{path: filepath.Clean(path), source: source, rank: rank})
 	}
 
 	if cfg.JavaPath != "" {
@@ -147,20 +157,40 @@ func discoverJava(cfg Config, cfgPath string, roots []string) []JavaCandidate {
 		add(path, "系统 PATH", 300)
 	}
 
+	return probeJavaCandidates(ctx, raw, probeJavaContext)
+}
+
+// Keep discovery responsive even when many nearby runtimes are present. Each
+// worker owns a distinct result slot, preserving deterministic discovery order.
+const javaProbeConcurrency = 4
+
+func probeJavaCandidates(ctx context.Context, raw []rawJavaCandidate, probe func(context.Context, string) (JavaCandidate, error)) []JavaCandidate {
 	results := make([]JavaCandidate, len(raw))
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for i, item := range raw {
+	for range min(javaProbeConcurrency, len(raw)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			candidate, err := probeJava(item.path)
-			candidate.Path = item.path
-			candidate.Source = item.source
-			candidate.Err = err
-			candidate.rank = item.rank
-			results[i] = candidate
+			for i := range jobs {
+				item := raw[i]
+				candidate := JavaCandidate{}
+				err := ctx.Err()
+				if err == nil {
+					candidate, err = probe(ctx, item.path)
+				}
+				candidate.Path = item.path
+				candidate.Source = item.source
+				candidate.Err = err
+				candidate.rank = item.rank
+				results[i] = candidate
+			}
 		}()
 	}
+	for i := range raw {
+		jobs <- i
+	}
+	close(jobs)
 	wg.Wait()
 	sort.SliceStable(results, func(i, j int) bool {
 		if (results[i].Err == nil) != (results[j].Err == nil) {
@@ -211,7 +241,11 @@ func shouldSkipDir(name string) bool {
 }
 
 func probeJava(path string) (JavaCandidate, error) {
-	runtime, err := java.Probe(path)
+	return probeJavaContext(context.Background(), path)
+}
+
+func probeJavaContext(ctx context.Context, path string) (JavaCandidate, error) {
+	runtime, err := java.ProbeContext(ctx, path)
 	return JavaCandidate{
 		Path:         runtime.Path,
 		Version:      runtime.Version,
@@ -388,6 +422,11 @@ func manifestValue(data []byte, key string) string {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
+		// Only the main section defines launch attributes; named entry sections
+		// may contain identically named attributes with unrelated meanings.
+		if line == "" {
+			break
+		}
 		if strings.HasPrefix(line, " ") && current != "" {
 			values[current] += strings.TrimPrefix(line, " ")
 			continue
@@ -397,10 +436,10 @@ func manifestValue(data []byte, key string) string {
 			current = ""
 			continue
 		}
-		current = strings.TrimSpace(parts[0])
+		current = strings.ToLower(strings.TrimSpace(parts[0]))
 		values[current] = strings.TrimSpace(parts[1])
 	}
-	return values[key]
+	return values[strings.ToLower(key)]
 }
 
 func selectJava(candidates []JavaCandidate, required int) (JavaCandidate, bool) {

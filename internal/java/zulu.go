@@ -469,6 +469,9 @@ func extractZuluTarGZ(archivePath, stage string) error {
 			continue
 		}
 		target := filepath.Join(stage, filepath.FromSlash(relative))
+		if err := rejectZuluSymlinkPath(stage, relative); err != nil {
+			return err
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -504,6 +507,27 @@ func extractZuluTarGZ(archivePath, stage string) error {
 			}
 		default:
 			return fmt.Errorf("Zulu tar 包含不支持的特殊条目 %s", relative)
+		}
+	}
+	return nil
+}
+
+// Tar archives may contain legal-file symlinks, but subsequent entries must
+// never use them as extraction directories. Lexical target checks alone cannot
+// protect writes when an earlier link changes a path's effective depth.
+func rejectZuluSymlinkPath(stage, relative string) error {
+	current := stage
+	for _, component := range strings.Split(relative, "/") {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("检查 Zulu 解压路径：%w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("Zulu 解压路径经过符号链接：%s", relative)
 		}
 	}
 	return nil

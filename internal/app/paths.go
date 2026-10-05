@@ -21,6 +21,8 @@ func openPath(path string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("打开路径 %s: %w", path, err)
 	}
+	// Reap the opener after it exits without blocking the TUI on the file manager.
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 

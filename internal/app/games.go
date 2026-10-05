@@ -99,7 +99,11 @@ func resolveGameAdapter(requested, mainClass string) GameAdapter {
 }
 
 func configuredProfileIDs() []string {
-	return []string{profileAuto, profileGeneric, profileMindustry}
+	profiles := []string{profileAuto, profileGeneric}
+	for _, adapter := range gameAdapters {
+		profiles = append(profiles, adapter.ID())
+	}
+	return profiles
 }
 
 func profileDisplayName(configured, mainClass string) string {

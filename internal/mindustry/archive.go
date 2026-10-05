@@ -208,7 +208,7 @@ func chooseBackupPath(destination string) (string, error) {
 	}
 	info, statErr := os.Stat(destination)
 	if statErr == nil && info.IsDir() {
-		return nextGeneratedBackupPath(destination), nil
+		return nextGeneratedBackupPath(destination)
 	}
 	if statErr == nil {
 		return destination, nil
@@ -219,10 +219,10 @@ func chooseBackupPath(destination string) (string, error) {
 	if strings.EqualFold(filepath.Ext(destination), ".zip") {
 		return destination, nil
 	}
-	return nextGeneratedBackupPath(destination), nil
+	return nextGeneratedBackupPath(destination)
 }
 
-func nextGeneratedBackupPath(directory string) string {
+func nextGeneratedBackupPath(directory string) (string, error) {
 	stamp := time.Now().Format("20060102-150405.000")
 	for number := 0; ; number++ {
 		name := backupFilePrefix + stamp + ".zip"
@@ -231,7 +231,9 @@ func nextGeneratedBackupPath(directory string) string {
 		}
 		candidate := filepath.Join(directory, name)
 		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate
+			return candidate, nil
+		} else if err != nil {
+			return "", fmt.Errorf("创建备份：检查备份文件名：%w", err)
 		}
 	}
 }

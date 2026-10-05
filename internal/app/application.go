@@ -5,33 +5,28 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/ahdg6/java-game-launcher/internal/diagnostics"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Run parses command-line flags and starts either the TUI or CLI workflow.
-func Run() {
-	configPath := flag.String("config", defaultConfigPath(), "配置文件路径")
-	instanceSelector := flag.String("instance", "", "选择实例（优先匹配 ID，名称必须唯一）")
-	launch := flag.Bool("launch", false, "不进入 TUI，直接启动游戏")
-	dryRun := flag.Bool("dry-run", false, "检查并打印启动命令，但不执行")
-	diagnose := flag.Bool("diagnose", false, "打印 Java/JAR 检测结果")
-	preflight := flag.Bool("preflight", false, "执行完整启动前检查（含 JVM 参数试运行）")
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Mindustry-first Java 游戏启动器\n\n用法: %s [选项] [-- 游戏参数...]\n\n", filepath.Base(os.Args[0]))
-		flag.PrintDefaults()
+// Run starts one launcher invocation and returns its process exit status.
+// Arguments exclude the program name; streams belong to the caller.
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	options, err := parseCLIOptions(args, stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
 	}
-	flag.Parse()
-	absConfigPath, err := filepath.Abs(*configPath)
+	if err != nil {
+		return 2
+	}
+	absConfigPath, err := filepath.Abs(options.configPath)
 	if err == nil {
-		*configPath = absConfigPath
+		options.configPath = absConfigPath
 	}
-	launcherCfg, loadErr := loadLauncherConfig(*configPath)
-	cliMode := *launch || *dryRun || *diagnose || *preflight
+	launcherCfg, loadErr := loadLauncherConfig(options.configPath)
+	cliMode := options.launch || options.dryRun || options.diagnose || options.preflight
 	cfg := defaultConfig()
 	loadWarnings := []string(nil)
 	recoveredSafeModes := []string(nil)
@@ -43,10 +38,10 @@ func Run() {
 	}
 	if loadErr == nil {
 		var selected *InstanceConfig
-		if *instanceSelector == "" {
+		if options.instance == "" {
 			selected, selectionErr = launcherCfg.Active()
 		} else {
-			selected, selectionErr = launcherCfg.ResolveInstance(*instanceSelector)
+			selected, selectionErr = launcherCfg.ResolveInstance(options.instance)
 		}
 		if selectionErr != nil {
 			selected, _ = launcherCfg.Active()
@@ -62,17 +57,24 @@ func Run() {
 	if loadErr == nil {
 		if cliMode && selectionErr == nil {
 			var recovered bool
-			recovered, recoveryErr = recoverInstance(cfg, *configPath)
+			recovered, recoveryErr = recoverInstance(cfg, options.configPath)
 			if recovered {
 				recoveredSafeModes = append(recoveredSafeModes, selectedName)
 			}
 		} else if !cliMode {
-			recoveredSafeModes, recoveryErr = recoverAllInstances(launcherCfg, *configPath)
+			recoveredSafeModes, recoveryErr = recoverAllInstances(launcherCfg, options.configPath)
 		}
 	}
 	if cliMode {
-		runCLI(cfg, &launcherCfg, *configPath, *launch, *dryRun, *diagnose, *preflight, errors.Join(loadErr, selectionErr, recoveryErr), flag.Args())
-		return
+		if err := errors.Join(loadErr, selectionErr, recoveryErr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := runCLI(cfg, &launcherCfg, options, stdin, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	}
 	if selected := launcherCfg.InstanceByID(cfg.InstanceID); selected != nil {
 		selected.ApplyConfig(cfg)
@@ -94,161 +96,10 @@ func Run() {
 	} else if len(recoveredSafeModes) > 0 {
 		status = "已恢复上次中断的安全模式模组：" + strings.Join(recoveredSafeModes, "、")
 	}
-	p := tea.NewProgram(newModel(launcherCfg, *configPath, status, statusErr, flag.Args()...), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(launcherCfg, options.configPath, status, statusErr, options.gameArgs...), tea.WithAltScreen(), tea.WithInput(stdin), tea.WithOutput(stdout))
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "启动 TUI 失败:", err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "启动 TUI 失败:", err)
+		return 1
 	}
-}
-
-func runCLI(cfg Config, launcher *LauncherConfig, cfgPath string, launch, dryRun, diagnose, preflight bool, loadErr error, extraGameArgs []string) {
-	if loadErr != nil {
-		fmt.Fprintln(os.Stderr, loadErr)
-		os.Exit(1)
-	}
-	env := discoverEnvironment(cfg, cfgPath)
-	changed := applyAutoSelections(&cfg, cfgPath, env)
-	if diagnose {
-		printDiagnostics(env)
-		if !launch && !dryRun && !preflight {
-			return
-		}
-	}
-	if changed && launch {
-		if err := saveCLIAutoSelections(cfgPath, launcher, cfg); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	}
-	if len(extraGameArgs) > 0 {
-		cfg.GameArgs = append(append([]string{}, cfg.GameArgs...), extraGameArgs...)
-	}
-	if preflight {
-		report := RunLaunchPreflight(cfg, cfgPath)
-		printPreflightReport(report)
-		if !report.Ready {
-			os.Exit(1)
-		}
-		if !launch && !dryRun {
-			return
-		}
-	}
-	spec, err := prepareLaunch(cfg, cfgPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "无法启动:", err)
-		os.Exit(1)
-	}
-	if dryRun {
-		fmt.Println("工作目录:", spec.WorkingDir)
-		fmt.Println("启动命令:", formatCommand(spec))
-		return
-	}
-	if launch {
-		if err := ensureLaunchDirectories(spec); err != nil {
-			fmt.Fprintln(os.Stderr, "无法启动:", err)
-			os.Exit(1)
-		}
-		if err := runCLIProcess(spec, cfgPath); err != nil {
-			fmt.Fprintln(os.Stderr, "游戏进程异常结束:", err)
-			os.Exit(1)
-		}
-	}
-}
-
-func saveCLIAutoSelections(cfgPath string, launcher *LauncherConfig, cfg Config) error {
-	instance := launcher.InstanceByID(cfg.InstanceID)
-	if instance == nil {
-		return errors.New("保存自动选择：当前实例不存在")
-	}
-	// --instance selects one invocation. Persist newly discovered paths for that
-	// instance without silently changing the TUI's configured active instance.
-	instance.ApplyConfig(cfg)
-	return saveLauncherConfig(cfgPath, *launcher)
-}
-
-func runCLIProcess(spec LaunchSpec, cfgPath string) error {
-	session := newLaunchSession(spec, cfgPath)
-	if path := session.writer.logPath(); path != "" {
-		fmt.Fprintln(os.Stderr, "[启动器] 持久日志:", path)
-	}
-	spec.Command.Stdout = io.MultiWriter(os.Stdout, session.writer)
-	spec.Command.Stderr = io.MultiWriter(os.Stderr, session.writer)
-	err := spec.Command.Run()
-	if err != nil {
-		_, _ = fmt.Fprintf(session.writer, "\n[启动器] 游戏进程异常结束: %v\n", err)
-	} else {
-		_, _ = io.WriteString(session.writer, "\n[启动器] 游戏进程已退出。\n")
-	}
-	output := session.writer.output()
-	logPath := session.writer.logPath()
-	session.writer.close()
-	if err != nil {
-		if logPath != "" {
-			fmt.Fprintln(os.Stderr, "[启动器] 完整日志已保存:", logPath)
-		}
-		for _, diagnostic := range diagnostics.AnalyzeLaunchFailure(normalizeLog(output), err) {
-			fmt.Fprintf(os.Stderr, "[诊断] %s：%s\n", diagnostic.Title, diagnostic.Summary)
-			for _, suggestion := range diagnostic.Suggestions {
-				fmt.Fprintln(os.Stderr, "  -", suggestion)
-			}
-		}
-	}
-	return err
-}
-
-func printPreflightReport(report PreflightReport) {
-	for _, check := range report.Checks {
-		mark := "OK"
-		if check.Level == PreflightWarning {
-			mark = "WARN"
-		} else if check.Level == PreflightError {
-			mark = "ERROR"
-		}
-		fmt.Printf("[%s] %s: %s\n", mark, check.Name, check.Summary)
-	}
-	if report.Ready {
-		fmt.Println("启动前检查通过")
-	} else {
-		fmt.Println("启动前检查失败")
-	}
-}
-
-func printDiagnostics(env Environment) {
-	fmt.Println("Java 检测结果:")
-	if len(env.Java) == 0 {
-		fmt.Println("  未找到")
-	}
-	for _, candidate := range env.Java {
-		if candidate.Err != nil {
-			fmt.Printf("  [不可用] %s (%s, %s): %v\n", candidate.Path, candidate.Source, javaArchitectureLabel(candidate), candidate.Err)
-		} else {
-			fmt.Printf("  [Java %d, %s] %s (%s, %s)\n", candidate.Version, javaArchitectureLabel(candidate), candidate.Path, candidate.Source, candidate.VersionText)
-		}
-	}
-	fmt.Println("JAR 检测结果:")
-	if len(env.Jars) == 0 {
-		fmt.Println("  未找到")
-	}
-	for _, jar := range env.Jars {
-		if jar.Err != nil {
-			fmt.Printf("  [不可用] %s: %v\n", jar.Path, jar.Err)
-		} else {
-			native := strings.Join(jar.NativeArchitectures, "/")
-			if native == "" {
-				native = "未声明"
-			}
-			fmt.Printf("  [%s, Java %d+, 原生架构 %s] %s (Main-Class: %s)\n", jar.ProfileName, jar.RequiredJavaVersion, native, jar.Path, jar.MainClass)
-		}
-	}
-}
-
-func javaArchitectureLabel(candidate JavaCandidate) string {
-	arch := candidate.Architecture
-	if arch == "" {
-		arch = "未知架构"
-	}
-	if candidate.DataModel > 0 {
-		return fmt.Sprintf("%s/%d位", arch, candidate.DataModel)
-	}
-	return arch
+	return 0
 }

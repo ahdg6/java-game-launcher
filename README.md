@@ -171,31 +171,40 @@ Java、JAR 和工作目录的相对路径按配置文件目录解析；数据目
 
 ## 构建
 
-需要 Go 1.24 或更新版本：
+推荐使用 [mise](https://mise.jdx.dev/) 管理 Go 和日常任务。首次在项目根目录运行：
+
+```sh
+mise trust
+mise install
+mise tasks
+```
+
+本地和 CI 统一读取 `mise.toml`，使用固定的 Go 1.25.12；升级工具链只需更新这里的版本并运行完整检查。`go.mod` 声明的最低版本仍为 Go 1.24。实际工具链可通过 `mise exec -- go version` 查看。
+
+CI 在 Linux、Windows、macOS 执行同一套 `mise run check`，Linux 额外运行竞态测试，通过后执行六个平台的构建任务。
+
+```sh
+mise run build                  # 当前平台，输出到 dist/
+mise run build:all              # 六个平台的发布构建，输出到 dist/
+mise run build:windows-amd64    # 只构建指定平台
+mise run check                  # 格式检查 + go vet + 所有测试
+mise run test:race              # 竞态检查，需要本机 C 编译器
+mise run ci                     # check + 竞态检查 + 本机构建
+mise run fmt                    # 自动格式化
+mise run run                    # 直接运行 TUI
+mise run run -- --help          # 向启动器传参
+```
+
+本机构建生成 `dist/java-game-launcher`（Windows 为 `.exe`）；跨平台发布成品沿用 `java-game-launcher-<平台>-<架构>` 命名。构建任务禁用 CGO，竞态测试单独启用 CGO。上述任务可在 Linux、macOS 和 Windows 使用；Windows 格式检查使用系统 PowerShell。
+
+也可以继续直接使用 Go 1.24 或更新版本：
 
 ```sh
 go test ./...
 go build -trimpath -o java-game-launcher ./cmd/java-game-launcher
 ```
 
-提交前可运行统一检查入口（格式、`vet`、测试）：
-
-```sh
-./scripts/check.sh
-```
-
-一次构建 Windows、Linux、macOS 的 amd64/arm64 版本：
-
-```sh
-chmod +x scripts/build-all.sh
-./scripts/build-all.sh
-```
-
-Windows PowerShell：
-
-```powershell
-.\scripts\build-windows.ps1
-```
+已有的 `scripts/check.sh`、`scripts/build-all.sh`、`scripts/build-windows.ps1` 作为兼容入口保留，分别转发到 mise 的 `check`、`build:all`、`build:windows-amd64` 任务，也需要安装 mise。
 
 构建使用 `CGO_ENABLED=0`，不需要额外 DLL 或 C 编译器。游戏 JAR 与 JRE/JDK 不会打包进启动器。
 
@@ -210,7 +219,8 @@ internal/diagnostics/    无界面依赖的启动失败诊断规则
 internal/java/           Java 探测、JVM 预设和 Zulu 运行时安装
 internal/mindustry/      备份、模组和安全启动领域逻辑
 internal/fsutil/         原子替换、归档路径校验等共享文件安全原语
-scripts/                 检查与跨平台构建入口
+mise.toml                工具链版本、检查和构建任务的统一定义
+scripts/                 兼容旧命令的 mise 转发入口
 dist/                    构建成品（不纳入版本控制）
 ```
 

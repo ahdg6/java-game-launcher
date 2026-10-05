@@ -12,7 +12,7 @@ import (
 
 func TestZuluUIRequiresExplicitQueryAndDoubleInstallConfirmation(t *testing.T) {
 	m := newModel(defaultLauncherConfig(), filepath.Join(t.TempDir(), configFileName), "", false)
-	m.showZulu = true
+	m.page = pageZulu
 	if m.zuluBusy || m.zuluPackage.UUID != "" || !strings.Contains(m.zuluView(), "没有联网查询") {
 		t.Fatalf("opening Zulu page started work: busy=%v package=%#v", m.zuluBusy, m.zuluPackage)
 	}
@@ -48,7 +48,7 @@ func TestZuluUIFailureDoesNotChangeJavaAndSuccessSelectsCurrentInstance(t *testi
 	}
 	other.JavaPath = "other/bin/java"
 	m := newModel(launcher, filepath.Join(root, configFileName), "", false)
-	m.showZulu = true
+	m.page = pageZulu
 	m.zuluBusy = true
 
 	failed, command := m.updateZulu(zuluInstallMsg{err: errors.New("checksum failed")})

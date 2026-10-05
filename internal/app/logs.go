@@ -23,19 +23,23 @@ type launchOutputMsg struct {
 }
 type launchStreamClosedMsg struct{ session *launchSession }
 type launchFinishedMsg struct {
-	err      error
-	output   string
-	logPath  string
-	duration time.Duration
+	session    *launchSession
+	cleanupErr error
+	err        error
+	output     string
+	logPath    string
+	duration   time.Duration
 }
 
 type launchSession struct {
-	spec      LaunchSpec
-	events    chan struct{}
-	writer    *launchLogWriter
-	started   time.Time
-	process   *launchProcessSession
-	onStarted func(pid int) error
+	spec        LaunchSpec
+	events      chan struct{}
+	writer      *launchLogWriter
+	started     time.Time
+	process     *launchProcessSession
+	onStarted   func(pid int) error
+	beforeStart func() error
+	afterExit   func() error
 }
 
 type launchLogWriter struct {
@@ -225,9 +229,9 @@ func (w *launchLogWriter) Write(p []byte) (int, error) {
 	} else {
 		overflow := w.buffer.Len() + len(p) - maxCapturedLogBytes
 		if overflow > 0 {
-			old := append([]byte(nil), w.buffer.Bytes()[overflow:]...)
-			w.buffer.Reset()
-			_, _ = w.buffer.Write(old)
+			// Advance the read offset; bytes.Buffer compacts amortized instead
+			// of copying the entire 4 MiB tail on every small write.
+			w.buffer.Next(overflow)
 			w.truncated = true
 		}
 		_, _ = w.buffer.Write(p)
@@ -277,31 +281,42 @@ func (w *launchLogWriter) logPath() string {
 
 func runLaunchSession(session *launchSession) tea.Cmd {
 	return func() tea.Msg {
-		if err := ensureLaunchDirectories(session.spec); err != nil {
+		result := launchFinishedMsg{session: session}
+		result.err = ensureLaunchDirectories(session.spec)
+		prepared := false
+		if result.err == nil && session.beforeStart != nil {
+			result.err = session.beforeStart()
+			prepared = result.err == nil
+		}
+		if result.err != nil {
 			session.process.finish()
-			_, _ = fmt.Fprintf(session.writer, "[启动器] 启动前检查失败: %v\n", err)
-			output := session.writer.output()
-			path := session.writer.logPath()
-			session.writer.close()
-			return launchFinishedMsg{err: err, output: output, logPath: path, duration: time.Since(session.started)}
-		}
-		cmd := session.spec.Command
-		cmd.Stdout = session.writer
-		cmd.Stderr = session.writer
-		err := session.process.run(cmd, session.onStarted)
-		if errors.Is(err, ErrLaunchStopped) {
-			_, _ = io.WriteString(session.writer, "\n[启动器] 服务器已由用户停止。\n")
-		} else if err != nil {
-			_, _ = fmt.Fprintf(session.writer, "\n[启动器] 游戏进程异常结束: %v\n", err)
+			_, _ = fmt.Fprintf(session.writer, "[启动器] 启动前检查失败: %v\n", result.err)
 		} else {
-			_, _ = io.WriteString(session.writer, "\n[启动器] 游戏进程已退出。\n")
+			cmd := session.spec.Command
+			if cmd != nil {
+				cmd.Stdout, cmd.Stderr = session.writer, session.writer
+			}
+			result.err = session.process.run(cmd, session.onStarted)
+			if errors.Is(result.err, ErrLaunchStopped) {
+				_, _ = io.WriteString(session.writer, "\n[启动器] 服务器已由用户停止。\n")
+			} else if result.err != nil {
+				_, _ = fmt.Fprintf(session.writer, "\n[启动器] 游戏进程异常结束: %v\n", result.err)
+			} else {
+				_, _ = io.WriteString(session.writer, "\n[启动器] 游戏进程已退出。\n")
+			}
 		}
-		output := session.writer.output()
-		path := session.writer.logPath()
+		// Cleanup belongs to this session and completes before the UI can start
+		// another run. It also executes when process startup or binding fails.
+		if prepared && session.afterExit != nil {
+			result.cleanupErr = session.afterExit()
+			if result.cleanupErr != nil {
+				_, _ = fmt.Fprintf(session.writer, "\n[启动器] 安全模式结束，但恢复模组失败：%v\n", result.cleanupErr)
+			}
+		}
+		result.output, result.logPath = session.writer.output(), session.writer.logPath()
+		result.duration = time.Since(session.started)
 		session.writer.close()
-		return launchFinishedMsg{
-			err: err, output: output, logPath: path, duration: time.Since(session.started),
-		}
+		return result
 	}
 }
 

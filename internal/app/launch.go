@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,13 @@ type LaunchSpec struct {
 }
 
 func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
+	return prepareLaunchContext(context.Background(), cfg, cfgPath)
+}
+
+func prepareLaunchContext(ctx context.Context, cfg Config, cfgPath string) (LaunchSpec, error) {
+	if err := ctx.Err(); err != nil {
+		return LaunchSpec{}, err
+	}
 	javaPath := resolveConfigPath(cfgPath, cfg.JavaPath)
 	jarPath := resolveConfigPath(cfgPath, cfg.JarPath)
 	if cfg.JavaPath == "" {
@@ -36,7 +44,7 @@ func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
 	if jar.Err != nil {
 		return LaunchSpec{}, fmt.Errorf("游戏 JAR 无效: %w", jar.Err)
 	}
-	java, probeErr := probeJava(javaPath)
+	java, probeErr := probeJavaContext(ctx, javaPath)
 	java.Path = javaPath
 	if err := javaArchitectureError(java, jar); err != nil {
 		return LaunchSpec{}, err
@@ -56,7 +64,7 @@ func prepareLaunch(cfg Config, cfgPath string) (LaunchSpec, error) {
 	args := append([]string{}, jvmArgs...)
 	adapter := effectiveAdapter(cfg, jar)
 	if requiredModules := adapter.RequiredJavaModules(jar.MainClass); len(requiredModules) > 0 {
-		modules, moduleErr := javaruntime.ProbeModules(javaPath)
+		modules, moduleErr := javaruntime.ProbeModulesContext(ctx, javaPath)
 		if moduleErr != nil {
 			return LaunchSpec{}, fmt.Errorf("检查 Java 模块: %w", moduleErr)
 		}

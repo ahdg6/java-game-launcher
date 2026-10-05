@@ -319,3 +319,29 @@ func TestExtractCurrentOfficialZuluArchiveWhenAvailable(t *testing.T) {
 		t.Fatalf("official extracted Java probe: %v", err)
 	}
 }
+
+func TestExtractZuluTarRejectsWritesThroughEarlierSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require platform privileges")
+	}
+	root := t.TempDir()
+	archive := filepath.Join(root, "links.tar.gz")
+	// The first link reduces the depth of subsequent paths. Without checking
+	// actual ancestors, the second link can make a later write leave stage.
+	writeZuluTarHeaders(t, archive, []*tar.Header{
+		{Name: "zulu/", Mode: 0o755, Typeflag: tar.TypeDir},
+		{Name: "zulu/a", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "."},
+		{Name: "zulu/a/b/", Mode: 0o755, Typeflag: tar.TypeDir},
+		{Name: "zulu/a/b/escape", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "../../.."},
+	})
+	stage := filepath.Join(root, "stage")
+	if err := os.Mkdir(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractZuluTarGZ(archive, stage); err == nil || !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("expected symlink ancestor rejection, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(stage, "zulu", "b")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected write through symlink: %v", err)
+	}
+}

@@ -32,19 +32,19 @@ func TestHistoryListsOpensDiagnosesAndDeletesInstanceLogs(t *testing.T) {
 	_ = os.Chtimes(failedPath, now, now)
 
 	m := newModel(defaultLauncherConfig(), configPath, "", false)
-	m.showHistory = true
+	m.page = pageHistory
 	m.refreshHistory()
 	if len(m.historyLogs) != 2 || m.historyLogs[0].Path != failedPath {
 		t.Fatalf("history = %#v", m.historyLogs)
 	}
 	opened, _ := m.openSelectedHistoryLog()
 	m = opened.(model)
-	if !m.showLog || m.showHistory || len(m.diagnostics) == 0 || m.diagnostics[0].Code != "unrecognized_jvm_option" {
+	if m.page != pageLog || m.page == pageHistory || len(m.diagnostics) == 0 || m.diagnostics[0].Code != "unrecognized_jvm_option" {
 		t.Fatalf("opened history diagnostics = %#v", m.diagnostics)
 	}
 
-	m.showLog = false
-	m.showHistory = true
+	m.closePage(pageLog, pageMain)
+	m.page = pageHistory
 	m.refreshHistory()
 	first, _ := m.updateHistory(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	m = first.(model)

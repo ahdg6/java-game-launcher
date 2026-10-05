@@ -11,6 +11,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type runtimeState struct {
+	zuluBusy           bool
+	zuluPackage        java.ZuluPackage
+	zuluStatus         string
+	zuluStatusErr      bool
+	confirmZuluInstall bool
+}
+
 type zuluMetadataMsg struct {
 	pkg java.ZuluPackage
 	err error
@@ -65,11 +73,11 @@ func (m model) updateZulu(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q":
-		m.showZulu = false
+		m.closePage(pageZulu, pageMain)
 		m.confirmZuluInstall = false
 		return m, nil
 	case "p":
-		m.showZulu = false
+		m.closePage(pageZulu, pageMain)
 		return m, m.beginPathPicker(editJavaPath, "选择 Java 可执行文件")
 	case "r":
 		m.zuluBusy = true

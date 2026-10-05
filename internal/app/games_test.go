@@ -1,6 +1,27 @@
 package app
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+type testGameAdapter struct{ genericAdapter }
+
+func (testGameAdapter) ID() string { return "test-game" }
+
+func TestRegisteredAdapterCanBeConfigured(t *testing.T) {
+	original := gameAdapters
+	gameAdapters = append(slices.Clone(gameAdapters), testGameAdapter{})
+	t.Cleanup(func() { gameAdapters = original })
+	launcher := defaultLauncherConfig()
+	launcher.Instances[0].GameProfile = "test-game"
+	if err := normalizeLauncherConfig(&launcher); err != nil {
+		t.Fatalf("registered adapter rejected by config validation: %v", err)
+	}
+	if adapter := resolveGameAdapter("test-game", "example.Main"); adapter.ID() != "test-game" {
+		t.Fatalf("registered adapter was not selected: %s", adapter.ID())
+	}
+}
 
 func TestAutoProfileRecognizesMindustry(t *testing.T) {
 	adapter := resolveGameAdapter(profileAuto, "mindustry.desktop.DesktopLauncher")

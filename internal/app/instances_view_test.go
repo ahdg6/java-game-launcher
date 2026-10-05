@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,7 +38,7 @@ func TestTUIDeletingActiveInstanceDoesNotOverwriteReplacement(t *testing.T) {
 	}
 	second.JarPath = "second.jar"
 	m := newModel(launcher, filepath.Join(t.TempDir(), configFileName), "", false)
-	m.showInstances = true
+	m.page = pageInstances
 	m.instancesCursor = 0
 
 	first, _ := m.updateInstances(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
@@ -98,5 +99,33 @@ func TestInstanceIDGenerationIsStableAndPortable(t *testing.T) {
 	first := uniqueInstanceID(launcher, defaultInstanceID)
 	if first != "default-2" {
 		t.Fatalf("unique ID = %q", first)
+	}
+}
+
+func TestTUIDeletingRunningActiveInstancePreservesConfiguration(t *testing.T) {
+	launcher := defaultLauncherConfig()
+	launcher.Instances[0].JarPath = "running.jar"
+	if _, err := launcher.CreateInstance("second", "Second"); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(launcher, filepath.Join(t.TempDir(), configFileName), "", false)
+	m.page, m.launching = pageInstances, true
+	m.activeSession = &launchSession{}
+	session := m.activeSession
+	beforeLauncher, beforeConfig := m.launcher.clone(), m.cfg
+	// A confirmation left over from an earlier visit must not bypass the guard.
+	m.confirmDeleteInstance = true
+	for range 2 {
+		updated, command := m.Update(keyRune('d'))
+		m = updated.(model)
+		if command != nil {
+			t.Fatal("deleting running instance scheduled work")
+		}
+	}
+	if !reflect.DeepEqual(m.launcher, beforeLauncher) || !reflect.DeepEqual(m.cfg, beforeConfig) {
+		t.Fatalf("running instance configuration changed: launcher=%#v cfg=%#v", m.launcher, m.cfg)
+	}
+	if !m.launching || m.activeSession != session || !m.statusErr {
+		t.Fatal("running session or rejection status lost")
 	}
 }

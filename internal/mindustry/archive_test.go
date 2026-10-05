@@ -337,3 +337,13 @@ func createBackupTestZip(t *testing.T, name string, files map[string]string) {
 		t.Fatal(err)
 	}
 }
+
+func TestNextGeneratedBackupPathReturnsFilesystemErrors(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nextGeneratedBackupPath(file); err == nil {
+		t.Fatal("expected an error for a non-directory backup location")
+	}
+}

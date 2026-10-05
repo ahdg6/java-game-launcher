@@ -110,7 +110,7 @@ func TestNoModRetryPreparationFailureRemainsInLogView(t *testing.T) {
 	m.cfg.JavaPath = "missing-java"
 	m.cfg.JarPath = "missing.jar"
 	m.launchErr = errors.New("previous launch failed")
-	m.showLog = true
+	m.page = pageLog
 	m.activeSession = &launchSession{spec: LaunchSpec{
 		Jar:           JarInfo{MainClass: "mindustry.desktop.DesktopLauncher"},
 		NeedsGraphics: true,
@@ -120,8 +120,13 @@ func TestNoModRetryPreparationFailureRemainsInLogView(t *testing.T) {
 	}
 	updated, command := m.Update(keyRune('m'))
 	m = updated.(model)
-	if command != nil || !m.showLog || m.launchErr == nil || m.logPath == "" || !strings.Contains(m.logText, "启动前检查失败") {
-		t.Fatalf("retry failure state: log=%v err=%v path=%q text=%q", m.showLog, m.launchErr, m.logPath, m.logText)
+	if command == nil {
+		t.Fatal("preparation did not return a background command")
+	}
+	updated, command = m.Update(command())
+	m = updated.(model)
+	if command != nil || m.page != pageLog || m.launchErr == nil || m.logPath == "" || !strings.Contains(m.logText, "启动前检查失败") {
+		t.Fatalf("retry failure state: log=%v err=%v path=%q text=%q", m.page == pageLog, m.launchErr, m.logPath, m.logText)
 	}
 }
 
@@ -138,6 +143,34 @@ func TestLaunchWriterCoalescesSignalsButKeepsContinuousTail(t *testing.T) {
 	}
 	if got := normalizeLog(writer.output()); got != "red 你" {
 		t.Fatalf("coalesced continuous output = %q", got)
+	}
+}
+
+func TestLaunchWriterPreservesTailAcrossOverflowAndOversizedWrites(t *testing.T) {
+	writer := &launchLogWriter{}
+	var stream strings.Builder
+	for _, chunk := range []string{
+		strings.Repeat("a", maxCapturedLogBytes-1),
+		"bc",
+		"small update",
+		strings.Repeat("d", maxCapturedLogBytes+1),
+		"final update",
+	} {
+		stream.WriteString(chunk)
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+		want := stream.String()
+		if len(want) <= maxCapturedLogBytes {
+			if writer.output() != want {
+				t.Fatal("log changed before reaching the capture limit")
+			}
+			continue
+		}
+		parts := strings.SplitN(writer.output(), "\n\n", 2)
+		if len(parts) != 2 || parts[1] != want[len(want)-maxCapturedLogBytes:] {
+			t.Fatal("truncated log did not preserve the exact continuous tail")
+		}
 	}
 }
 
@@ -205,8 +238,13 @@ func TestPreparationFailureIsPersistedAndShownInLogView(t *testing.T) {
 	m.cfg.JavaPath = ""
 	updated, command := m.startConfiguredGame()
 	m = updated.(model)
-	if command != nil || !m.showLog || m.launchErr == nil || len(m.diagnostics) == 0 {
-		t.Fatalf("preparation failure state: showLog=%v err=%v diagnostics=%#v", m.showLog, m.launchErr, m.diagnostics)
+	if command == nil {
+		t.Fatal("preparation did not return a background command")
+	}
+	updated, command = m.Update(command())
+	m = updated.(model)
+	if command != nil || m.page != pageLog || m.launchErr == nil || len(m.diagnostics) == 0 {
+		t.Fatalf("preparation failure state: showLog=%v err=%v diagnostics=%#v", m.page == pageLog, m.launchErr, m.diagnostics)
 	}
 	if m.logPath == "" || !strings.Contains(m.logText, "启动前检查失败") {
 		t.Fatalf("preparation failure log path=%q text=%q", m.logPath, m.logText)
@@ -224,12 +262,17 @@ func TestSafeModePreparationFailureUsesPersistentLogView(t *testing.T) {
 	configDirectory := t.TempDir()
 	m := newModel(defaultLauncherConfig(), filepath.Join(configDirectory, configFileName), "", false)
 	m.loading = false
-	m.showTools = true
+	m.page = pageTools
 	m.cfg.JavaPath = ""
 	updated, command := m.startSafeMode(filepath.Join(configDirectory, "game_data"))
 	m = updated.(model)
-	if command != nil || m.showTools || !m.showLog || m.logPath == "" || m.launchErr == nil {
-		t.Fatalf("safe mode preparation failure: tools=%v log=%v path=%q err=%v", m.showTools, m.showLog, m.logPath, m.launchErr)
+	if command == nil {
+		t.Fatal("preparation did not return a background command")
+	}
+	updated, command = m.Update(command())
+	m = updated.(model)
+	if command != nil || m.page == pageTools || m.page != pageLog || m.logPath == "" || m.launchErr == nil {
+		t.Fatalf("safe mode preparation failure: tools=%v log=%v path=%q err=%v", m.page == pageTools, m.page == pageLog, m.logPath, m.launchErr)
 	}
 }
 

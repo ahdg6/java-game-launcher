@@ -1,0 +1,84 @@
+[tools]
+go = "1.25.12"
+
+# Task commands run from the project root. Keep CGO disabled only for builds:
+# race tests require CGO and a native C compiler.
+[tasks.build]
+description = "构建当前平台到 dist/"
+env = { CGO_ENABLED = "0" }
+run = "go build -trimpath -o dist/java-game-launcher ./cmd/java-game-launcher"
+run_windows = "go build -trimpath -o dist/java-game-launcher.exe ./cmd/java-game-launcher"
+
+[tasks.run]
+description = "运行启动器；-- 后可追加启动器参数"
+run = "go run ./cmd/java-game-launcher"
+
+[tasks.test]
+description = "运行所有测试"
+run = "go test ./..."
+
+[tasks."test:race"]
+description = "运行竞态测试（需要本机 C 编译器）"
+env = { CGO_ENABLED = "1" }
+run = "go test -race ./..."
+
+[tasks.vet]
+description = "运行 Go 静态检查"
+run = "go vet ./..."
+
+[tasks.fmt]
+description = "格式化 Go 源码"
+run = "gofmt -w cmd internal"
+
+[tasks."fmt:check"]
+description = "检查 Go 格式，不修改源码"
+run = '''
+unformatted=$(gofmt -l cmd internal)
+if [ -n "$unformatted" ]; then
+    printf 'gofmt is required for:\n%s\n' "$unformatted" >&2
+    exit 1
+fi
+'''
+run_windows = '''powershell -NoProfile -Command "$files = & gofmt -l cmd internal; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if ($files) { Write-Output 'gofmt is required for:'; Write-Output $files; exit 1 }"'''
+
+[tasks.check]
+description = "提交前检查：格式、vet、测试"
+depends = ["fmt:check", "vet", "test"]
+
+[tasks.ci]
+description = "完整本机验证：提交检查、竞态测试、本机构建"
+depends = ["check", "test:race", "build"]
+
+[tasks."build:all"]
+description = "构建 Windows、Linux、macOS 的 amd64/arm64 发布包"
+depends = ["build:windows-amd64", "build:windows-arm64", "build:linux-amd64", "build:linux-arm64", "build:macos-amd64", "build:macos-arm64"]
+
+[tasks."build:windows-amd64"]
+description = "构建 windows-amd64 发布包"
+env = { CGO_ENABLED = "0", GOOS = "windows", GOARCH = "amd64" }
+run = 'go build -trimpath -ldflags "-s -w" -o dist/java-game-launcher-windows-amd64.exe ./cmd/java-game-launcher'
+
+[tasks."build:windows-arm64"]
+description = "构建 windows-arm64 发布包"
+env = { CGO_ENABLED = "0", GOOS = "windows", GOARCH = "arm64" }
+run = 'go build -trimpath -ldflags "-s -w" -o dist/java-game-launcher-windows-arm64.exe ./cmd/java-game-launcher'
+
+[tasks."build:linux-amd64"]
+description = "构建 linux-amd64 发布包"
+env = { CGO_ENABLED = "0", GOOS = "linux", GOARCH = "amd64" }
+run = 'go build -trimpath -ldflags "-s -w" -o dist/java-game-launcher-linux-amd64 ./cmd/java-game-launcher'
+
+[tasks."build:linux-arm64"]
+description = "构建 linux-arm64 发布包"
+env = { CGO_ENABLED = "0", GOOS = "linux", GOARCH = "arm64" }
+run = 'go build -trimpath -ldflags "-s -w" -o dist/java-game-launcher-linux-arm64 ./cmd/java-game-launcher'
+
+[tasks."build:macos-amd64"]
+description = "构建 macos-amd64 发布包"
+env = { CGO_ENABLED = "0", GOOS = "darwin", GOARCH = "amd64" }
+run = 'go build -trimpath -ldflags "-s -w" -o dist/java-game-launcher-macos-amd64 ./cmd/java-game-launcher'
+
+[tasks."build:macos-arm64"]
+description = "构建 macos-arm64 发布包"
+env = { CGO_ENABLED = "0", GOOS = "darwin", GOARCH = "arm64" }
+run = 'go build -trimpath -ldflags "-s -w" -o dist/java-game-launcher-macos-arm64 ./cmd/java-game-launcher'

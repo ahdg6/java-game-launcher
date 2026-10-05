@@ -10,6 +10,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type toolsState struct {
+	toolsCursor   int
+	toolBusy      bool
+	toolStatus    string
+	toolStatusErr bool
+	backupCount   int
+	lastBackup    mindustry.BackupResult
+}
+
 const mindustryToolCount = 8
 
 type toolResultMsg struct {
@@ -46,7 +55,7 @@ func (m model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc", "q":
 		if !m.toolBusy {
-			m.showTools = false
+			m.closePage(pageTools, pageMain)
 		}
 	case "up", "k":
 		m.toolsCursor = (m.toolsCursor - 1 + mindustryToolCount) % mindustryToolCount
@@ -89,7 +98,7 @@ func (m model) activateTool() (tea.Model, tea.Cmd) {
 			return toolResultMsg{message: message, backup: &result}
 		}
 	case 1:
-		m.showBackups = true
+		m.page = pageBackups
 		m.refreshBackups()
 	case 2:
 		return m.startSafeMode(dataDir)
@@ -102,12 +111,12 @@ func (m model) activateTool() (tea.Model, tea.Cmd) {
 		}
 		return m.openToolDirectory(filepath.Join(dataDir, "mods"), "模组目录")
 	case 5:
-		m.showMods = true
+		m.page = pageMods
 		m.refreshMods()
 	case 6:
 		return m.openToolDirectory(m.backupDirectory(), "备份目录")
 	case 7:
-		m.showTools = false
+		m.closePage(pageTools, pageMain)
 	}
 	return m, nil
 }
@@ -125,36 +134,7 @@ func (m model) startSafeMode(dataDir string) (tea.Model, tea.Cmd) {
 		m.toolStatus, m.toolStatusErr = "仍在检测 Java，请稍候", true
 		return m, nil
 	}
-	m.syncActiveInstance()
-	if err := saveLauncherConfig(m.cfgPath, m.launcher); err != nil {
-		m.showTools = false
-		return m.showPrepareLaunchFailure(fmt.Errorf("保存无模组启动配置：%w", err))
-	}
-	m.dirty = false
-	spec, err := prepareLaunch(m.configForNextLaunch(), m.cfgPath)
-	if err != nil {
-		m.showTools = false
-		return m.showPrepareLaunchFailure(err)
-	}
-	stateDir := recoveryStateDirectory(m.cfgPath, m.cfg.InstanceID)
-	if recovered, err := recoverInstance(m.cfg, m.cfgPath); err != nil {
-		m.showTools = false
-		return m.showPrepareLaunchFailure(fmt.Errorf("恢复上次安全模式：%w", err))
-	} else if recovered {
-		m.toolStatus = "已先恢复上次中断的安全模式"
-	}
-	if err := mindustry.BeginSafeMode(dataDir, stateDir); err != nil {
-		m.showTools = false
-		return m.showPrepareLaunchFailure(fmt.Errorf("准备无模组安全启动：%w", err))
-	}
-	m.safeModeActive = true
-	m.toolStatus, m.toolStatusErr = "本次启动已临时禁用全部模组；退出后会自动恢复", false
-	startedModel, command := m.startLaunchSpec(spec)
-	started := startedModel.(model)
-	started.activeSession.onStarted = func(pid int) error {
-		return mindustry.BindSafeModeProcess(dataDir, stateDir, pid)
-	}
-	return started, command
+	return m.startLaunchPreparation(dataDir)
 }
 
 func (m model) openToolDirectory(path, label string) (tea.Model, tea.Cmd) {

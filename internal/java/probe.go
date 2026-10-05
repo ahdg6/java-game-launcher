@@ -38,6 +38,11 @@ func javaExecutableName() string {
 
 // Probe executes a Java binary and reads its version and runtime properties.
 func Probe(path string) (Runtime, error) {
+	return ProbeContext(context.Background(), path)
+}
+
+// ProbeContext probes a runtime with a four-second deadline and caller cancellation.
+func ProbeContext(ctx context.Context, path string) (Runtime, error) {
 	result := Runtime{Path: path}
 	result.Architecture, result.DataModel = executableArchitecture(path)
 	info, err := os.Stat(path)
@@ -47,11 +52,16 @@ func Probe(path string) (Runtime, error) {
 	if info.IsDir() {
 		return result, fmt.Errorf("路径是目录")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "-XshowSettings:properties", "-version").CombinedOutput()
+	command := exec.CommandContext(ctx, path, "-XshowSettings:properties", "-version")
+	command.WaitDelay = time.Second
+	out, err := command.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return result, fmt.Errorf("检测超时")
+		return result, fmt.Errorf("检测超时: %w", ctx.Err())
+	}
+	if ctx.Err() != nil {
+		return result, ctx.Err()
 	}
 	text := strings.TrimSpace(string(out))
 	for _, pattern := range versionPatterns {
@@ -93,11 +103,21 @@ func ParseProperties(output string) map[string]string {
 
 // ProbeModules returns the names reported by java --list-modules.
 func ProbeModules(path string) (map[string]bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	return ProbeModulesContext(context.Background(), path)
+}
+
+// ProbeModulesContext lists modules with a four-second deadline and caller cancellation.
+func ProbeModulesContext(ctx context.Context, path string) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "--list-modules").CombinedOutput()
+	command := exec.CommandContext(ctx, path, "--list-modules")
+	command.WaitDelay = time.Second
+	out, err := command.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("模块检测超时")
+		return nil, fmt.Errorf("模块检测超时: %w", ctx.Err())
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("执行 java --list-modules: %w: %s", err, strings.TrimSpace(string(out)))
